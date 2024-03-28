@@ -1,0 +1,1488 @@
+---
+title: "HIV_viral_supression2"
+author: "Hanley"
+date: "10/28/2021"
+output:
+  html_document: default
+  word_document: default
+---
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+setwd("C:/Users/hking/OneDrive/my documents/UW/SHARP & Farquahar Lab/HIV drug resistance/") 
+
+library(plyr); library(dplyr)
+library(lubridate)
+library(magrittr)
+
+library(tidyverse)
+#library(readxl)
+#library(writexl)
+library(haven)
+library(table1)
+#library(Biostrings)
+library(lmtest)
+library(arsenal)
+
+library(sandwich)
+library(lmtest)
+```
+
+
+## Read in 08/25/2021 SHARP index and partner datasets and accompanying sample data and DRM data
+```{r read_data}
+index_data <- read_dta("sharp_index_master_data.dta") #N=989
+index_data$source <- "indexes"
+nrow(index_data)
+
+partner_data <- read_dta("sharp_partner_master_data.dta") #N=4540
+partner_data$source <- "partners"
+nrow(partner_data)
+
+samples <- read.csv("SHARPMaster DB_15th Sept 2021.csv") %>%
+  #dplyr::rename("ptid" = "ï..ptid") %>% #Note: another package seems to load plyr, and rename will otherwise default to that and not work?
+  mutate(
+    #Correct inconsistencies in how indexes and partners are reported - note: did not actualyl end up using this variable
+    #Fix inconsistency in HIV subtype
+    hiv_subtype.F = ifelse(hiv_subtype == "A1 ", "A1", hiv_subtype))
+
+end_of_study <- read_dta("Endof_studyInventorall.dta")
+
+#Are all indexes in sample data?
+sum(!(index_data$ptid %in% samples$ptid))
+#There are 199 indexes not in sample data
+
+#This is just samples that have a DRM and are on ART >4 months - not planning to use except as a double-check
+DRM2 <- read_csv("On_ART_4months_unsuppressed_DRM_56_20Dec2021.csv")
+
+#This is more detailed description of DRMs compiled from Bhavna's spreadsheets by HK, but will defer to DRM for the final DRM count
+DRM <- read_csv("HIVDR_1_1.csv") %>% #NEW
+  mutate(Resistance_Type_Simplified = ifelse(Resistance_Type_Simplified == "", NA, Resistance_Type_Simplified)) %>%
+  filter(!is.na(ptid))
+
+nrow(DRM)
+```
+
+
+## Combine index and partner data
+```{r}
+data <- rbind.fill(partner_data, index_data)
+```
+
+## Add columns for sample data, and DRM data
+```{r}
+#Some sample ptids aren't in data
+samples$ptid[!(samples$ptid %in% data$ptid)]
+#Double-check!
+c(255752076555, 639432293703, 408760382528, 528283064425, 285600922956,
+  849942810717, 566184596652, 425323692462) %in% index_data$ptid
+c(255752076555, 639432293703, 408760382528, 528283064425, 285600922956,
+  849942810717, 566184596652, 425323692462) %in% partner_data$ptid
+
+data <- merge(data, samples, by = "ptid", all.x = TRUE, all.y = TRUE, suffixes = c("", ".samp"))
+
+#No ptids are in DRM but not in the data
+DRM[!(DRM$ptid %in% data$ptid), "ptid"]
+
+data <- merge(data, DRM2, by = "ptid", all.x = TRUE) %>%
+  mutate(
+    Resistance = case_when(
+      is.na(Resistance) ~ "None",
+      TRUE ~ Resistance
+    )
+  )
+
+data <- merge(data, DRM, by = "ptid", all.x = TRUE)
+
+data$ptid <- as.character(data$ptid)
+nrow(data)
+```
+
+# Get ptids for all sequences
+```{r}
+#sequences / fasta file
+seq.hiv <- read.table("SHARP.HIV.n276_pol_PRandRT_2021.08.12.fasta") %>%
+  #extract only sequence identifiers
+  filter(grepl(">", V1)) %>%
+  #Remove '>' because this will not show up in imported tree file
+  dplyr::mutate(
+    V1 = gsub(">", "", V1),
+    V1 = gsub("\\|.*", "", V1)) %>%
+  #exclude this sequence because very partial
+  filter(V1 != "682793501524") %>% #NEW
+  #extract as a vector
+  pull(V1)
+
+length(seq.hiv)
+```
+
+
+
+## Recode variables (note: re-run this code chunk before running any regression analyses)
+```{r recode_variables}
+## Recode index dataset: We want to have the overall results and then stratify the results by virally suppressed and not virally suppressed
+data.temp = data %>% 
+  mutate(
+    in_samples = ifelse(ptid %in% samples$ptid, 1, 0),
+    Index_or_Partner = case_when(
+      in_index == 1 & in_partner > 0 ~ "index_and_partner",
+      in_index == 1 & in_partner == 0 ~ "index",
+      in_index == 0 & in_partner > 0 ~ "partner"
+    ),
+    site = as.factor(site),
+         region = as.factor(region),
+         sex = as.factor(sex),
+         age_r1 = case_when(
+           age <= 35 ~  "<=35", 
+           age > 35 ~ ">35") %>%
+      factor(levels = c(">35", "<=35")),
+         
+         relationship_status = case_when(
+           maritalstatus == 1 ~ 0, #single
+           maritalstatus == 2 ~ 1, #married/partnered
+           maritalstatus == 3 ~ 1, #married/partnered
+           maritalstatus == 4 ~ 1, #married/partnered
+           maritalstatus == 5 ~ 2, #divorced/separated/widowed
+           maritalstatus == 7 ~ 2, #divorced/separated/widowed
+           maritalstatus == 6 ~ 2 #divorced/separated/widowed
+           ) %>% as.factor(),
+         
+         hivtestbeforepositive = as.factor(hivtestbeforepositive),
+         hivtestbeforepositive_bi = case_when(
+           hivtestbeforepositive == 0 ~ 0, #no -> no
+           hivtestbeforepositive == 1 ~ 1, #yes, tested -> yes
+           hivtestbeforepositive == 2 ~ 1, #yes, told -> yes
+         ),
+         hivtestbeforepositive_bi = as.factor(hivtestbeforepositive_bi),
+         
+         arv = as.factor(arv),
+         arvcurrent = as.factor(arvcurrent),
+         #Note that arvcurrent is NA for anyone newly diagnosed (ie. who tested positive for the first time when enrolled - ie. this variable is restricted to people eligable for ART. I will make a second variable for which anyone living with HIV and not on ART (even if newly diagnosed) is "no")
+         arvcurrent2 = case_when(
+           hiv_status_final == 0 ~ as.character(NA),
+           arvcurrent == 1 & (arvstarttime_m >= 4 | arvstarttime_y > 0) ~ "Yes (4 or more months)",
+           arvcurrent == 1 & (arvstarttime_m < 4 | arvstarttime_y == 0) ~ "Yes (less than 4 months)", 
+           arvcurrent == 0 ~ "No",
+           is.na(arvcurrent) & arvcurrent_combo == 0 ~ "No (new case)"
+         ) %>%
+      factor(levels = c("No", "No (new case)", "Yes (less than 4 months)", "Yes (4 or more months)")),
+    arv_time_among_more_than_4_mo_group = case_when( #NEW
+      arvcurrent == 1 & arvstarttime_y >= 10 ~ "10 or more years",
+      arvcurrent == 1 & arvstarttime_y >= 2 ~ "2-10 years",
+      arvcurrent2 == "Yes (4 or more months)" ~ "4 months - 2 years",
+      arvcurrent2 == "No" | arvcurrent2 == "No (new case)" | arvcurrent2 == "Yes (less than 4 months)" | is.na(arvcurrent2) ~ as.character(NA)
+      ) %>%
+        factor(levels = c("10 or more years", "2-10 years", "4 months - 2 years")), # Note that this time variable is only included for individuals on ART more than 4 months and currently on ART (ie. individuals in analysis)
+    arv_time_totalm = case_when( #NEW
+      arvcurrent2 == "No (new case)" ~ as.numeric(NA),
+      arvcurrent2 == "No" ~ 0,
+      is.na(arvcurrent2) ~ as.numeric(NA),
+      TRUE ~ 12*arvstarttime_y + arvstarttime_m
+    ),
+
+         enrolledhivcare = as.factor(enrolledhivcare),
+         arvtotal_group = case_when(
+           arvcurrent2 == 0 & arvstoptime_y < 1 ~ "stopped ARV <1 year ago",
+           arvcurrent2 == 0 & arvstoptime_y >= 1 ~ "stopped ARV >1 year ago",
+           arvcurrent2 == 1 & is.na(arvstoptime_y) & arvstarttime_y == 0 ~ "<1 year",
+           arvcurrent2 == 1 & is.na(arvstoptime_y) & arvstarttime_y >= 1 & arvstarttime_y < 5 ~ "1-5 years",
+           arvcurrent2 == 1 & is.na(arvstoptime_y) & arvstarttime_y >= 3 ~ ">5 years",
+           TRUE ~ as.character(NA)
+         ),
+         
+    barrierhivcare = as.factor(barrierhivcare),     
+    barriertransportation = as.factor(barriertransportation),
+         barrierwaittime = as.factor(barrierwaittime),
+         barrierstatusdisclosure = as.factor(barrierstatusdisclosure),
+         barrierpoorinteractions = as.factor(barrierpoorinteractions),
+         
+         violencephysical = as.factor(violencephysical),
+         violencethreaten = as.factor(violencethreaten),
+         violenceforcedsex = as.factor(violenceforcedsex),
+         sexual_or_domestic_abuse = ifelse(
+           violencephysical_sexpartner == 1 |violenceforcedsex == 1, "Yes", "No") %>%
+      as.factor(), #NEW
+    
+        lab_hcv_status = case_when(
+           lab_hcv_status == "Negative" ~ 0,
+           lab_hcv_status == "Positive" ~ 1,
+         ) %>%
+      as.factor(),
+         hcv_treatment_bi = case_when(
+           hcv_treatment == 0 ~ 0, #no -> no
+           hcv_treatment == 1 ~ 1, #yes -> yes
+           hcv_treatment == 9 ~ 0 #Not sure/Don't know -> no
+         ) %>% as.factor(),
+    
+         havesexwith = as.factor(havesexwith),
+         heterosexual_only = case_when(
+           #males who have sex with females only
+           sex == 0 & havesexwith == 1 ~ "heterosexual",
+           #females who have sex with males only
+           sex == 1 & havesexwith == 0 ~ "heterosexual",
+           #have sex with males and females
+           havesexwith == 2 ~ "not heterosexual",
+           #males who have sex with males only
+           sex == 0 & havesexwith == 0 ~ "not heterosexual",
+           #females who have sex with females only    
+           sex == 1 & havesexwith == 1 ~ "not heterosexual",
+           TRUE ~ as.character(NA)
+         ) %>%
+           factor(levels = c("not heterosexual", "heterosexual"), ordered = FALSE),
+    MSM = case_when(
+      sex == 1 ~ as.character(NA), #women (1)
+      sex == 0 & (havesexwith == 0 | havesexwith == 2) ~ "MSM", #Men (0) who have sex only with men (0) or with men and women (2)
+      sex == 0 & havesexwith == 1 ~ "not MSM" #Men (0) who have sex only with women (1)
+    ) %>%
+      factor(levels = c("not MSM", "MSM"), ordered = FALSE),
+         lastsexcondom = as.factor(lastsexcondom),
+         lastsexcondom_bi = case_when(
+           lastsexcondom == 0 ~ 0, #no -> no
+           lastsexcondom == 1 ~ 1, #yes -> yes
+           lastsexcondom == 0 ~ 0, #Not sure/Don't know -> no
+         ),
+         lastsexcondom_bi = as.factor(lastsexcondom_bi),
+    rcdmoneysex_F = case_when(
+      rcdmoneysex == 1 & sex == 1 ~ "Yes",
+      rcdmoneysex == 1 & sex == 0 ~ as.character(NA),
+      rcdmoneysex == 0 & sex == 1 ~ "No",
+      rcdmoneysex == 0 & sex == 0 ~ as.character(NA)) %>%
+      as.factor(),
+    rcdmoneysex_M = case_when(
+      rcdmoneysex == 1 & sex == 0 ~ "Yes",
+      rcdmoneysex == 1 & sex == 1 ~ as.character(NA),
+      rcdmoneysex == 0 & sex == 0 ~ "No",
+      rcdmoneysex == 0 & sex == 1 ~ as.character(NA))%>%
+      as.factor(),
+         sexwithhiv = as.factor(sexwithhiv),
+         sexpartners3months_group = case_when(
+           sexpartners3months == 0 ~ "0",
+           sexpartners3months == 1 | sexpartners3months == 2 ~ "1-2",
+           sexpartners3months >2 ~ ">2"
+         ),
+
+    drugspastmonth_chat = case_when(
+      grepl("khat|Chat", drugspastmonthother, ignore.case=TRUE) ~ 1,
+      TRUE ~ drugspastmonth_chat
+    ),
+        drugspastmonth_valium = case_when(
+      grepl("Diazepam", drugspastmonthother, ignore.case=TRUE) ~ 1,
+      TRUE ~ drugspastmonth_valium
+    ),
+    drugspastmonth_heroin = case_when(
+      grepl("Heroin", drugspastmonthother, ignore.case=TRUE) ~ 1,
+      TRUE ~ drugspastmonth_heroin
+    ),
+        drugspastmonth_tobacco = case_when(
+      grepl("Tobbacco", drugspastmonthother, ignore.case=TRUE) ~ 1,
+      TRUE ~ 0
+    ),
+            drugspastmonth_tobacco = case_when(
+      grepl("Tobbacco", drugspastmonthother, ignore.case=TRUE) ~ 1,
+      TRUE ~ 0
+    ),
+    drugspastmonth_benzos = case_when(
+      drugspastmonth_valium == 1 | drugspastmonth_rohipnol == 1 | drugspastmonth_meth == 1 ~ 1,
+      TRUE ~ 0
+    ),
+    
+    
+    activeinjectorsdichot = cut(injecttimesmonth, breaks = c(0, 1, Inf), right = FALSE, labels=c("0", "1")),
+    
+    #Create polysubstance use variables - people who are active injectors AND use 3 or more substances
+   polysub = case_when(
+     activeinjectorsdichot == 1 &
+       (drugspastmonth_benzos + drugspastmonth_cocaine + drugspastmonth_alcohol + drugspastmonth_marijuana + drugspastmonth_heroin + drugspastmonth_chat >= 3) ~ 1,
+     is.na(activeinjectorsdichot) ~ as.numeric(NA),
+     TRUE ~ 0
+   ),
+
+         everinjecteddrugs = case_when(
+           source == "indexes" | in_index == 1 ~ 1,
+           everinjecteddrugs == 1 ~ 1,
+           TRUE ~ everinjecteddrugs
+         ),
+         years_injecting_group = case_when(
+      #Note that <5 (rather than 0) is the reference category here (because otherwise there's a positivity violation due to small sample size)
+           years_injecting == 0 | everinjecteddrugs == 0 ~ "none",
+           years_injecting < 5 ~ "less than 5",
+           years_injecting >= 5 ~ "5 or more") %>%
+           factor(levels = c("less than 5", "5 or more", "none"), ordered = FALSE),
+    injected_last_month = ifelse(injecttimesmonth > 0, "Yes", "No"),
+    
+   #There are some unrealistically high alcoholtimesday values - I will make these NA
+   alcoholtimesday = case_when( #NEW
+     alcoholtimesday > 20 ~ as.numeric(NA),
+     TRUE ~ alcoholtimesday
+   ),
+       alcohol_past_month_cat = ifelse(grepl(9, as.character(drugspastmonth), fixed = TRUE) | alcoholtimesmonth > 0 | drugspastmonth_alcohol == 1, "Yes", "No") %>%
+     as.factor(), #NEW
+   alcoholtimesweek = case_when(
+     alcoholtimesday == 0 ~ alcoholtimesmonth/4,
+     TRUE ~ (alcoholtimesmonth * alcoholtimesday)/4),
+     alcoholstrat = case_when(
+       alcoholtimesweek > 7 & sex == 1 ~ "heavy (>7 drinks/week for females; >14 drinks for males)", 
+       alcoholtimesweek > 14 & sex == 0 ~ "heavy (>7 drinks/week for females; >14 drinks for males)", 
+       alcoholtimesweek <= 7 & alcoholtimesweek > 0 & sex == 1 ~ "moderate (1-7 drinks/week for females; 1-14 drinks for males)",
+       alcoholtimesweek <= 14 & alcoholtimesweek > 0 & sex == 0 ~ "moderate (1-7 drinks/week for females; 1-14 drinks for males)",    
+       alcoholtimesweek == 0 ~ "none",
+       TRUE ~ as.character(NA) #NEW
+   ), 
+     
+        preferreddrug = as.factor(preferreddrug),
+         shareneedles = as.factor(shareneedles),
+         shareequipment = as.factor(shareequipment),
+         methadonenow = as.factor(methadonenow),
+         methadonenow2 = case_when(
+           everinjecteddrugs == 0 ~ "never injected drugs",
+           is.na(methadoneever) ~ as.character(NA),
+           methadonenow == 1 ~ "on methadone",
+           methadonenow == 0 ~ "not on methadone",
+           is.na(methadonenow) & !is.na(methadoneever) ~ "not on methadone",
+           TRUE ~ as.character(methadonenow) #This will catch anything missed
+           ) %>%
+           factor(levels = c("not on methadone", "on methadone", "never injected drugs"), ordered = FALSE),
+         
+         cat_named_injection_only = case_when( # Recode number of injection-only partners
+           cnt_named_injection_only == 0 ~ 0, # 0 sexual partners
+           cnt_named_injection_only == 1 ~ 1, # 1 sexual partner
+           cnt_named_injection_only >= 2 ~ 2, # 2 or more sexual partners
+           ),
+         cat_named_injection_only = as.factor(cat_named_injection_only),
+         
+         cat_named_sexual_only = case_when( # Recode number of sexual-only partners
+           cnt_named_sexual_only == 0 ~ 0, # 0 sexual partners
+           cnt_named_sexual_only == 1 ~ 1, # 1 sexual partner
+           cnt_named_sexual_only >= 2 ~ 2, # 2 or more sexual partners
+           ),
+         cat_named_sexual_only = as.factor(cat_named_sexual_only),
+         
+         cat_named_injection_sexual = case_when( # Recode number of injection and sexual partners
+           cnt_named_injection_sexual == 0 ~ 0, # 0 sexual partners
+           cnt_named_injection_sexual == 1 ~ 1, # 1 sexual partner
+           cnt_named_injection_sexual >= 2 ~ 2, # 2 or more sexual partners
+           ),
+         cat_named_injection_sexual = as.factor(cat_named_injection_sexual),
+   
+            
+         hiv_vl = case_when(
+           hiv_vl == "" ~ as.character(NA),
+           hiv_vl == "N/A" ~ "SAMPLE DID NOT PASS QC",
+           hiv_vl == "Not Done Yet" ~ "SAMPLE DID NOT PASS QC",
+           hiv_vl == "[3]" ~ "SAMPLE DID NOT PASS QC",
+           hiv_vl == "SAMPLE DID NOT PASS QC" ~ "SAMPLE DID NOT PASS QC",
+           TRUE ~ hiv_vl),
+      
+         viralsup_vl_bi = case_when(
+           is.na(hiv_vl) | hiv_vl == "SAMPLE DID NOT PASS QC" ~ as.numeric(NA),
+           hiv_vl == "<832" ~ 1, #1 = viraly suppressed 
+           hiv_vl == "<839" ~ 1,
+           as.numeric(hiv_vl) < 1000 ~ 1, #Note: there is one sample with a viral load listed as 400!
+           as.numeric(hiv_vl) >= 1000 ~ 0), # 0 = not viraly suppressed
+         viralsup_onart = case_when(
+           viralsup_vl_bi == 1 & arvcurrent_combo == 1 ~ 0, # 0 = viraly suppressed and currently on ART (reference)
+           viralsup_vl_bi == 0 & arvcurrent_combo == 1 ~ 1, # 1 = not viraly suppressed (virologic failure) and currently on ART
+           is.na(viralsup_vl_bi) ~ as.numeric(NA)
+         ),
+
+         
+   hiv_vl_group = case_when(
+           hiv_vl == "SAMPLE DID NOT PASS QC" ~ "SAMPLE DID NOT PASS QC", 
+           is.na(hiv_vl) ~ as.character(NA),
+           hiv_vl == "<832" | hiv_vl == "<839" | as.numeric(hiv_vl) < 839 ~ "below detection limit (839)",
+           as.numeric(hiv_vl) >= 100000 ~ ">100,000",
+           as.numeric(hiv_vl) >= 10000 & as.numeric(hiv_vl) < 100000 ~ "10,000-100,000",
+           as.numeric(hiv_vl) >= 1000 & as.numeric(hiv_vl) < 10000 ~ "1,000-10,000",
+           as.numeric(hiv_vl) >= 839 & as.numeric(hiv_vl) < 1000 ~ "839-1000") %>%
+              factor(levels = c("below detection limit (839)", "839-1000", "1,000-10,000", "10,000-100,000", ">100,000", "SAMPLE DID NOT PASS QC")),
+      
+   hiv_seq_available = ifelse(ptid %in% seq.hiv, "sequence available", "no sequence"),
+
+    DRM2 = case_when( #NEW
+     hiv_seq_available == "no sequence" ~ as.character(NA),
+     hiv_status_final == 0 ~ as.character(NA),
+     ptid %in% DRM2$ptid & hiv_seq_available == "sequence available" ~ "Yes",
+     !(ptid %in% DRM2$ptid) & hiv_seq_available == "sequence available" ~ "No"
+   ),
+    
+   Resistance = factor(Resistance, ordered = FALSE), #NEW
+   DRM = case_when(
+      Resistance_Type_Simplified == "None" ~ "No",
+      Resistance_Type_Simplified == "PI" ~ "Yes",
+      Resistance_Type_Simplified == "NRTI; NNRTI" ~ "Yes",
+      Resistance_Type_Simplified == "NNRTI" ~ "Yes",
+      Resistance_Type_Simplified == "NRTI" ~ "Yes",
+      Resistance_Type_Simplified == "NRTI; NNRTI; PI" ~ "Yes",
+      is.na(Resistance_Type_Simplified) ~ Resistance_Type_Simplified,
+      TRUE ~ Resistance_Type_Simplified #This will catch if anything was missed and leave as is
+    ) %>%
+      factor(levels = c("No", "Yes"), ordered = FALSE)
+         ) %T>%
+  
+  #How many unique ptids?
+  { paste("unique ptids", length(unique(.$ptid))) %>% print } %>%
+  
+  #drop duplicates
+  dplyr::group_by(ptid) %>%
+  dplyr::arrange(hiv_status_final, ymd(enrollment_date), .by_group = TRUE) %>%
+  dplyr::slice(1L)
+
+data2 <- data.temp %>%
+  #Drop anyone not in sample data
+  filter(in_samples == 1) %T>%
+  { paste("in samples", nrow(.)) %>% print } %T>%
+  { paste("neg HIV status", sum(.$hiv_status_final == 0, na.rm = TRUE)) %>% print } %>%
+  filter(hiv_status_final == 1) %T>%
+  { paste("pos HIV status", nrow(.)) %>% print }
+```
+
+
+## Adding variable labels
+```{r labels}
+## Adding labels for questions and responses
+# Labels for responses
+data2$Index_or_Partner = factor(data2$Index_or_Partner,
+                              levels = c("index", "index_and_partner", "partner"))
+
+data2$site = factor(data2$site, 
+                        levels = 1:11, 
+                        labels = c("Nairobi - Pangani",
+                                   "Nairobi - Githurai", 
+                                   "Nairobi - Ngara",
+                                   "Nairobi - Mathari",
+                                   "Mtwapa - MEWA",
+                                   "Kilifi - MEWA",
+                                   "Malindi - Subcounty Hospital",
+                                   "Malindi - Omari",
+                                   "Mombasa - ReachOut",
+                                   "Mombasa - Kisauni MAT",
+                                   "Nairobi - Kawangware"))
+
+data2$region = factor(data2$region, 
+                        levels = 0:1, 
+                        labels = c("Nairobi",
+                                   "Coast"))
+
+data2$sex = factor(data2$sex, 
+                        levels = 0:1, 
+                        labels = c("Men", "Women"))
+
+data2$stablehousing = factor(data2$stablehousing,
+                             levels = 0:1,
+                             labels = c("No",
+                                        "Yes"))
+
+data2$relationship_status = factor(data2$relationship_status, 
+                               levels = 0:2, 
+                               labels = c("Single", 
+                                          "Married or partnered", 
+                                          "Divorced or separated or widowed"))
+
+data2$hivtestbeforepositive = factor(data2$hivtestbeforepositive, 
+                                          levels = 2:0, 
+                                          labels = c("Yes, told",
+                                                     "Yes, tested",
+                                                     "No"))
+
+data2$hivtestbeforepositive_bi = factor(data2$hivtestbeforepositive_bi, 
+                                             levels = 1:0, 
+                                             labels = c("Yes", "No"))
+
+data2$fl_partnertesthiv = factor(data2$fl_partnertesthiv,
+                                 levels = c(0:1),
+                                 labels = c("No", "Yes"))
+
+data2$arv = factor(data2$arv, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$enrolledhivcare = factor(data2$enrolledhivcare, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$barrierhivcare = factor(data2$barrierhivcare, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$barriertransportation = factor(data2$barriertransportation, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$barrierwaittime = factor(data2$barrierwaittime, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$barrierstatusdisclosure = factor(data2$barrierstatusdisclosure, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$barrierpoorinteractions = factor(data2$barrierpoorinteractions, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$violencephysical = factor(data2$violencephysical, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$violencethreaten = factor(data2$violencethreaten, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$violenceforcedsex = factor(data2$violenceforcedsex, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$lab_hcv_status = factor(data2$lab_hcv_status,
+                        levels = 0:1,
+                        labels = c("Negative", "Positive"))
+
+data2$hcv_treatment_bi = factor(data2$hcv_treatment_bi,
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$havesexwith = factor(data2$havesexwith,
+                                levels = 0:2, 
+                                labels = c("Only men", 
+                                           "Only women",
+                                           "Men and women"))
+
+data2$lastsexcondom_bi = factor(data2$lastsexcondom_bi,
+                        levels = 0:1,
+                        labels = c("no or not sure", "Used"))
+
+data2$rcdmoneysex = factor(data2$rcdmoneysex, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$sexwithhiv = factor(data2$sexwithhiv,
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$sexpartners3months_group = factor(data2$sexpartners3months_group,
+                        levels = c("0",
+                                   "1-2",
+                                   ">2"))
+
+data2$everinjecteddrugs = factor(data2$everinjecteddrugs,
+                                 levels = 0:1,
+                                 labels = c("No", "Yes"))
+
+data2$preferreddrug = factor(data2$preferreddrug,
+                                  levels = 1:10, 
+                                  labels = c("Heroin",
+                                             "Methamphetamine/Speed",
+                                             "Cocaine",
+                                             "Marijuana/Weed",
+                                             "Valium",
+                                             "Artane",
+                                             "Rohipnol",
+                                             "Chat",
+                                             "Alcohol",
+                                             "Other"))
+
+data2$polysub = factor(data2$polysub,
+                       levels = 0:1,
+                       labels = c("No", "Yes"))
+
+data2$alcoholstrat = factor(data2$alcoholstrat,
+                            levels = c("none", "moderate (1-7 drinks/week for females; 1-14 drinks for males)", "heavy (>7 drinks/week for females; >14 drinks for males)"))
+
+data2$shareneedles2 = factor(data2$shareneedles, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$shareequipment2 = factor(data2$shareequipment, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$methadonenow = factor(data2$methadonenow, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$DRM = factor(data2$DRM,
+                   levels = c("No", "Yes"))
+
+data2$arvcurrent = factor(data2$arvcurrent, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$arvcurrent_combo = factor(data2$arvcurrent_combo, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$arvtotal_group = factor(data2$arvtotal_group,
+                              levels = 0:4,
+                              labels = c("stopped ARV >1 year ago",
+                                         "stopped ARV <1 year ago",
+                                         "<1 year",
+                                         "1-5 years",
+                                         ">5 years"))
+
+data2$methadonenow_combo = factor(data2$methadonenow_combo, 
+                        levels = 0:1,
+                        labels = c("No", "Yes"))
+
+data2$cat_named_injection_only = factor(data2$cat_named_injection_only, 
+                               levels = 0:2, 
+                               labels = c("0", 
+                                          "1", 
+                                          "≥2"))
+
+data2$cat_named_sexual_only = factor(data2$cat_named_sexual_only, 
+                               levels = 0:2, 
+                               labels = c("0", 
+                                          "1", 
+                                          "≥2"))
+
+data2$cat_named_injection_sexual = factor(data2$cat_named_injection_sexual,                                levels = 0:2, 
+                               labels = c("0", 
+                                          "1", 
+                                          "≥2"))
+
+data2$viralsup_vl_bi = factor(data2$viralsup_vl_bi, 
+                               levels = 0:1, 
+                               labels = c("Unsuppressed VL (≥1000 c/ml)", 
+                                          "Suppressed VL (<1000 c/ml)"))
+
+data2$viralsup_onart = factor(data2$viralsup_onart, 
+                               levels = 0:1, 
+                               labels = c("Suppressed VL (<1000 c/ml)",
+                                          "Unsuppressed VL (≥1000 c/ml)"))
+
+# Labels for index questions
+label(data2$Index_or_Partner) = "enrolled as an index or partner"
+label(data2$site) = "Site"
+label(data2$region) = "Region"
+label(data2$sex) = "Sex"
+label(data2$age) = "Age (years)"
+label(data2$age_r1) = "Age (years)"
+label(data2$stablehousing) = "Have stable housing"
+label(data2$relationship_status) = "Relationship status"
+label(data2$sexpartners3months) = "Number of sex partners in last 3 months"
+label(data2$sexpartners3months_group) = "Number of sex partners in last 3 months"
+label(data2$heterosexual_only) = "only report heterosexual sex"
+label(data2$MSM) = "Men who have sex with men"
+label(data2$sexual_or_domestic_abuse) = "experienced domestic violence and/or sexual abuse"
+label(data2$hivtestbeforepositive_bi) = "Ever tested positive for HIV"
+label(data2$fl_partnertesthiv) = "partner tested for HIV (by follow-up)"
+label(data2$DRM) = "Have a major drug resistant mutation"
+label(data2$arv) = "Ever taken ARVs"
+label(data2$arvcurrent) = "Currently taking ARVs"
+label(data2$arv_time_among_more_than_4_mo_group) = "Time on ART (only for those on ART > 4 months)"
+label(data2$enrolledhivcare) = "Ever enrolled at an HIV clinic for HIV care"
+label(data2$barrierhivcare) = "Any barrier to HIV care" #Barrier to getting HIV care
+label(data2$barriertransportation) = "Barrier to care: Transportation" #Barriers to getting HIV care
+label(data2$barrierwaittime) = "Barrier to care: Wait time at HIV care center" #Barriers to getting HIV care
+label(data2$barrierstatusdisclosure) = "Barrier to care: Disclosure of HIV status" #Barriers to getting HIV care
+label(data2$barrierpoorinteractions) = "Barrier to care: Poor interactions with doctors and nurses" #Barriers to getting HIV care
+label(data2$violencephysical) = "Been physically abused in past year" 
+label(data2$violencethreaten) = "Been threatened with a weapon in past year" 
+label(data2$violenceforcedsex) = "Been sexually abused in past year" 
+label(data2$lab_hcv_status) = "Hepatitis C seropositivity (antibody test)"
+label(data2$lab_hcv_status) = "Hepatitis C seropositivity (antibody test)"
+label(data2$hcv_treatment_bi) = "Ever been treated for hepatitis C" 
+label(data2$havesexwith) = "Sexual partners" 
+label(data2$lastsexcondom_bi) = "Condom use during last sexual encounter" #But sexual encounter does not necessarily equate to last time someone had sex
+label(data2$rcdmoneysex) = "Ever received money for sex"
+label(data2$rcdmoneysex_F) = "Ever received money for sex (women only)"
+label(data2$rcdmoneysex_M) = "Ever received money for sex (men only)"
+label(data2$sexwithhiv) = "Had sex with HIV-positive individual in past year"
+label(data2$preferreddrug) = "Preferred drug of choice"
+label(data2$polysub) = "Polysubstance abuse (3 or more substances, excludes tabbacco)"
+label(data2$everinjecteddrugs) = "Ever injected drugs"
+label(data2$shareneedles2) = "Shared needles in past month"
+label(data2$years_injecting) = "Duration of injection use (years)"
+label(data2$years_injecting_group) = "number of years injecting drugs"
+label(data2$methadonenow) = "Currently in methadone program"
+label(data2$methadonenow_combo) = "Currently on methadone" #Unsure what the difference is between this and `methadonenow
+label(data2$methadonenow2) = "Currently on methadone" #This is difference than methadonenow because it count people who don't inject drugs as a seperate group insteead of NA
+label(data2$alcohol_past_month_cat) = "used alcohol in last month"
+label(data2$alcoholtimesmonth) = "Frequency of alcohol use in past month (days)"
+label(data2$alcoholstrat) = "alcohol use"
+label(data2$arvcurrent_combo) = "Currently on ART"
+label(data2$cnt_named_partners) = "Total partners named"
+label(data2$cnt_named_injection_only) = "Injection-only partners"
+label(data2$cat_named_injection_only) = "Injection-only partners"
+label(data2$cnt_named_sexual_only) = "Sexual-only partners"
+label(data2$cat_named_sexual_only) = "Sexual-only partners"
+label(data2$cnt_named_injection_sexual) = "Injection and sexual partners"
+label(data2$cat_named_injection_sexual) = "Injection and sexual partners"
+label(data2$viralsup_vl_bi) = "Viral Load Status"
+label(data2$viralsup_onart) = "Viral Load Status While on ART"
+```
+
+
+# Get counts for flow diagram
+```{r}
+#Viral load
+table(data2$hiv_vl_group, useNA = "ifany")
+
+#How many on ART (668, 625 for >=4 months)
+data2 %>% ungroup() %>% select(arvcurrent2) %>% table(useNA = "ifany")
+
+#Viral load (out of 625 on ART >=4 months) (148 non-suppressed, 475 suppressed, 2 not passing QC)
+data2 %>% ungroup() %>%
+  filter(arvcurrent2 == "Yes (4 or more months)") %>%
+  select(hiv_vl_group) %>% table(useNA = "ifany")
+
+#Viral load and ART
+data2 %>%
+  group_by(hiv_vl_group, arvcurrent2) %>%
+  dplyr::summarise(n = n(), .groups = "keep")
+
+#There are 17 individuals not on ART (and not new cases) but with low VL. Were they previously on ART?
+data2 %>%
+  ungroup() %>%
+  filter(hiv_vl_group == "less than 1000" & arvcurrent == 0) %>%
+  select(arvcurrent2, arvstoptime_m, arvstarttime_y)
+
+#Viral load and sequences available (122)
+data2 %>%
+  filter(arvcurrent2 == "Yes (4 or more months)" &
+           (hiv_vl_group == "1,000-10,000" |  hiv_vl_group == "10,000-100,000" | hiv_vl_group == ">100,000") &
+           !is.na(DRM)) %>% nrow() 
+
+#DR mutations - yes no
+data2 %>%
+  ungroup() %>%
+  filter(arvcurrent2 == "Yes (4 or more months)" &
+           (hiv_vl_group == "1,000-10,000" |  hiv_vl_group == "10,000-100,000" | hiv_vl_group == ">100,000") &
+           !is.na(DRM)) %>%
+  select(DRM) %>% table(useNA = "ifany")
+
+data2 %>% ungroup() %>%
+  filter(!is.na(DRM) & arvcurrent2 == "Yes (4 or more months)") %>%
+  select(hiv_vl_group) %>%
+  table(useNA = "ifany")
+data2 %>%
+  filter(hiv_seq_available == "sequence available" & arvcurrent2 == "Yes (4 or more months)") %>%
+  group_by(hiv_vl_group, DRM) %>%
+  dplyr::summarise(n = n(), .groups = "keep")
+
+#DR mutation X ART
+data2 %>%
+  filter(hiv_seq_available == "sequence available") %>%
+  group_by(hiv_vl_group, arvcurrent2, DRM) %>%
+  dplyr::summarise(n = n(), .groups = "keep")
+
+#DR type
+data2 %>%
+  filter(hiv_seq_available == "sequence available") %>%
+  group_by(hiv_vl_group, Resistance) %>%
+  dplyr::summarise(n = n(), .groups = "keep")
+
+#DR mutations type - only on ART >4 months type
+data2 %>%
+  filter(hiv_seq_available == "sequence available" & arvcurrent2 == "Yes (4 or more months)") %>%
+  group_by(hiv_vl_group, Resistance) %>%
+  dplyr::summarise(n = n(), .groups = "keep")
+
+
+#compare acquired (acquired = on ART & have a DRM) vs transmitted (transmitted = not on ART & have a DRM) DR
+data2 %>%
+  filter(hiv_seq_available == "sequence available", arv == "Yes", DRM == "Yes") %>%
+  group_by(hiv_vl_group) %>%
+  dplyr::summarise(n = n(), .groups = "keep")
+
+
+# What percent of all people living with HIV are virally suppressed in this dataset?
+prop.table(table(data2$viralsup))
+# What about just for partners who inject drugs (this group is not directly recruited from needle-syring programs so there's less likely to be sampling bias)
+prop.table(table(data2[data2$everinjecteddrugs == "Yes" & data2$Index_or_Partner != "index",]$viralsup, useNA = "ifany"))
+```
+surprisingly, viral suppression is slightly higher for partners vs indexes
+
+# Further filter data to only people on ART >4 years
+```{r}
+data3 <- data2 %>%
+  filter(hiv_vl_group != "SAMPLE DID NOT PASS QC") %T>%
+  { paste("sample passed QC", nrow(.)) %>% print } %>%
+  filter(arvcurrent == "Yes") %T>%
+  { paste("on ART:", nrow(.)) %>% print } %>%
+  filter(arvcurrent2 == "Yes (4 or more months)") %T>%
+  { paste("ART >= 4 months:", nrow(.)) %>% print }
+
+table(data3$Index_or_Partner, useNA = "ifany")
+table(data3[, c("hiv_vl_group", "DRM")], useNA = "ifany")
+```
+
+
+## Get a list of varaibles to test
+```{r}
+variables <- c("Index_or_Partner",
+               #demographic
+               "sex", "age_r1", "region", "relationship_status", "stablehousing",  "sexual_or_domestic_abuse",
+               #Drug use (changed methdonenow2 to methadonenow_combo on 6/24/22)
+              "arv_time_among_more_than_4_mo_group", "everinjecteddrugs", "shareneedles2", "years_injecting_group",
+               "methadonenow_combo", "alcohol_past_month_cat", "alcoholstrat", "polysub",
+               #relationship and sex
+               "rcdmoneysex_F", "rcdmoneysex_M",
+               "sexwithhiv", "sexpartners3months_group", "MSM",
+               "lastsexcondom_bi",
+               #HCV
+                "lab_hcv_status", "hcv_treatment_bi",
+               #barriers
+               "barrierhivcare", "barriertransportation", "barrierwaittime",
+               "barrierpoorinteractions", "barrierstatusdisclosure")
+
+#Also include continuous variables for table 1
+variables_table1 <- c("Index_or_Partner",
+               #demographic
+               "sex", "age", "age_r1", "region",  "relationship_status", "stablehousing", "sexual_or_domestic_abuse",
+               #Drug use
+                "arv_time_among_more_than_4_mo_group", "everinjecteddrugs", "shareneedles2", "years_injecting", "years_injecting_group",
+               "methadonenow_combo", "alcohol_past_month_cat", "alcoholstrat", "polysub",
+                #relationship and sex
+               "rcdmoneysex_F", "rcdmoneysex_M",
+               "sexwithhiv", "sexpartners3months", "sexpartners3months_group", "MSM",
+               "lastsexcondom_bi",
+                #HCV
+                "lab_hcv_status", "hcv_treatment_bi",
+               #barriers
+               "barrierhivcare", "barriertransportation", "barrierwaittime",
+               "barrierpoorinteractions", "barrierstatusdisclosure")
+```
+
+## Customize tableby function - NOT USING?
+```{r}
+tableby_controls <- tableby.control(
+    numeric.stats = c("Nmiss2", "meansd", "medianq1q3"),
+    cat.stats = c("Nmiss2", "countpct"),
+    numeric.test = "notest",
+    cat.test = "notest",
+    test.pname = "",
+    digits = 1,
+    digits.pct = 1,
+    simulate.p.value = FALSE)
+```
+
+
+## Test other trends (see Meeting_with_Bhavna2.docx)
+
+```{r}
+sex_stratified.formula <- as.formula(paste("sex ~ ", paste(variables_table1, collapse = " + ")))
+
+table.sex <- tableby(
+  formula = sex_stratified.formula,
+  data = data3,
+  control = tableby_controls)
+
+summary_table.sex <- summary(table.sex)
+
+write2word(summary_table.sex, "sex_stratified.docx")
+```
+
+
+## Get table1 - general variable summary - NOT USING
+```{r, eval = FALSE}
+
+table_one.formula <- as.formula(paste("sex ~ ", paste(variables_table1, collapse = " +")))
+
+table_one <- tableby(formula = table_one.formula,
+                     data = data3,
+                     control = tableby_controls)
+
+summary.table1 <- summary(table_one)
+write2word(summary.table1, "table1.doc", title = "table1")
+```
+
+
+```{r}
+#Get dataframes of viral supp and non-viral supp ptids for Bhavna
+On_ART_4months_suppressed <- data3 %>%
+  filter(viralsup_onart == "Suppressed VL (<1000 c/ml)") %>%
+  dplyr::select(paste(colnames(DRM)), shipment, hiv_vl, Sequencing_Method)
+write.csv(On_ART_4months_suppressed, paste0("On_ART_4months_suppressed_",
+                                            nrow(On_ART_4months_suppressed),
+                                            ".CSV"))
+
+On_ART_4months_unsuppressed <- data3 %>%
+  filter(viralsup_onart == "Unsuppressed VL (≥1000 c/ml)") %>%
+  dplyr::select(paste(colnames(DRM)), shipment, hiv_vl, Sequencing_Method)
+write.csv(On_ART_4months_unsuppressed, paste0("On_ART_4months_unsuppressed_",
+                                              nrow(On_ART_4months_unsuppressed),
+                                              ".CSV"))
+```
+
+### Get summary tables - NOT USING
+```{r, eval = FALSE}
+table_two.formula <- as.formula(paste("viralsup_onart ~ ", paste(variables, collapse = " + ")))
+
+table_two <- tableby(formula = table_two.formula,
+                     data = data3,
+                     control = tableby_controls)
+
+summary.table2 <- summary(table_two)
+write2word(summary.table2, "table2.doc", title = "table2")
+```
+
+```{r}
+#Get a dataframe of just unsuppressed on ART for more than 4 months
+data4 <- data3 %>%
+  filter(viralsup_vl_bi == "Unsuppressed VL (≥1000 c/ml)" & !is.na(DRM))
+
+#Get dataframes of DRM and non DRM ptids for Bhavna
+On_ART_4months_unsuppressed_DRM <- data4 %>%
+  filter(DRM == "Yes") %>%
+  select(paste(colnames(DRM)), shipment, hiv_vl, Sequencing_Method)
+write.csv(On_ART_4months_unsuppressed_DRM,
+          paste0("On_ART_4months_unsuppressed_DRM_",
+          nrow(On_ART_4months_unsuppressed_DRM), ".CSV"))
+
+On_ART_4months_unsuppressed_noDRM <- data4 %>%
+  filter(DRM == "No") %>%
+  select(paste(colnames(DRM)), shipment, hiv_vl, Sequencing_Method)
+write.csv(On_ART_4months_unsuppressed_noDRM,
+          paste0("On_ART_4months_unsuppressed_noDRM_",
+                 nrow(On_ART_4months_unsuppressed_noDRM), ".CSV"))
+```
+
+
+```{r}
+#dataframe of those unsupressed (regardless of whether typing was performed)
+data4.2 <- data3 %>%
+  filter(viralsup_vl_bi == "Unsuppressed VL (=1000 c/ml)")
+
+median(as.numeric(data4.2$hiv_vl))
+sum(as.numeric(data4.2$hiv_vl)>50000)/nrow(data4.2)
+
+median(data4.2$arv_time_totalm)
+summary(data4.2$arv_time_totalm)
+```
+
+### Get summary tables - NOT USING
+```{r, eval = FALSE}
+table_three.formula <- as.formula(paste("DRM ~ ", paste(variables, collapse = " + ")))
+table_three <- tableby(formula = table_three.formula,
+  data = data4,
+  control = tableby_controls)
+
+summary.table3 <- summary(table_three)
+write2word(summary.table3, "table3.doc", title = "table3")
+```
+
+
+
+## Univeriate and multivariate analyses
+```{r}
+assoc_test <- function(data, variable, outcome, covariates = NULL, include_counts = FALSE, add_total_count = FALSE) {
+  
+  if(!is.null(covariates)){
+    formula <- paste0(outcome, " ~ ", variable, " + ", paste(covariates, collapse = " + "))
+    print(paste("formula (note: covariates included):", formula))
+  } else{
+    formula <- paste0(outcome, " ~ ", variable)
+    print(paste("formula (note: NO covariates included):", formula))
+  }
+  
+  my_glm = glm(formula = formula,
+               data = data,
+               family = "poisson")
+  
+  n_categories <- length(na.omit(unique(data[,variable, drop = TRUE])))
+  
+  #Get coefficients (note: we are going to leave the intercept as a balnk line - this will match the blank line for variable name in the arsenal tableby output)
+  RR <- exp(coef(my_glm))[1:n_categories]
+
+  # Get model robust standard errors:
+  CI <- exp(coefci(my_glm, vcov = vcov(my_glm))) #Note: to specific a specific type of robust SE, use vcov = vcovHC(my_glm, type = "HC2"). Similarly, can get the robust SE with: coeftest(my_glm, vcov = sandwich) 
+
+  CI95_lower <- CI[1:n_categories, 1]
+  CI95_upper <- CI[1:n_categories, 2]
+  
+  # Include an indicator of statistical significance
+  signif <- names(RR) #give same format as RR
+  for(i in 1:length(RR)){
+    if(CI95_lower[i] > 1 | CI95_upper[i] < 1){
+      signif[i] <- "*"
+    } else {
+      signif[i] <- ""
+    }
+  }
+  
+  assoc_results <- RR
+  assoc_results[] <- paste0(sprintf("%.2f", round(RR,2)), " (", sprintf("%.2f", round(CI95_lower,2)), "-", paste0(sprintf("%.2f", round(CI95_upper,2))), ")", signif)
+
+  #make a row for reference - this identifies the first value in the factor (which is what get's used as a the reference)
+  #assoc_results[levels(data[ , variable, drop = TRUE])[1]] <- "ref" #need tp add this as second element
+  assoc_results.df <- as.data.frame(assoc_results)
+  assoc_results.df$values <- names(table(data[, variable, drop = TRUE]))
+  assoc_results.df$assoc_results[1] <- "ref" #the value in this row is actually the intercept value, which is incorrect! Indicate that this is the reference group
+  assoc_results.df$values_check <- gsub(variable, "", rownames(assoc_results.df))
+  assoc_results.df <- assoc_results.df %>% relocate(assoc_results, .after = values)
+
+  if(include_counts == "TRUE"){
+    outcome_counts <- table(data[, variable, drop = TRUE], data[, outcome, drop = TRUE])[,2]
+    total_counts <- table(data[, variable, drop = TRUE])
+    counts <- paste0(outcome_counts, " in ", total_counts,
+                     " (", sprintf("%.1f", round(100*outcome_counts/total_counts, 2)),"%)")
+    
+    assoc_results.df <- cbind(counts, assoc_results.df) %>%
+      relocate(counts, .after = values)
+  }
+
+  #add a row with the variable name
+  variable_label <- label(data[, variable, drop = TRUE])
+  if(add_total_count == TRUE){
+    variable_label <- paste0(variable_label,
+           " (N = ", length(na.omit(data[, variable, drop = TRUE])), ")")
+  }
+  assoc_results.df <- rbind(c(variable_label, rep("", 10)),
+                            assoc_results.df)
+  
+  return(assoc_results.df)
+}
+```
+
+## Get association data for table2
+### unadjusted
+```{r}
+data3$viralsup_onart_binary <- ifelse(data3$viralsup_onart == "Unsuppressed VL (≥1000 c/ml)", 1, 0) #Code viremia as 1 and non-viremic (suppressed) as 0
+
+
+table2.assoc <- lapply(variables, assoc_test, data = data3, outcome = "viralsup_onart_binary", include_counts = TRUE) %>%
+  bind_rows() %>%
+  dplyr::rename(RR = assoc_results)
+```
+
+### adjusted
+```{r}
+data3$sex_binary <- ifelse(data3$sex == "Women", 1, 0)
+
+table2.assoc.adj <- lapply(variables, assoc_test, data = data3, outcome = "viralsup_onart_binary", covariates = c("sex_binary", "age_r1", "arv_time_among_more_than_4_mo_group")) %>%
+  bind_rows() %>%
+  dplyr::rename(RR_adj = assoc_results)
+
+#combine:
+#confirm variables align are identical before joining! - this muct be TRUE!
+identical(table2.assoc$values, table2.assoc.adj$values)
+identical(table2.assoc$variable, table2.assoc.adj$variable)
+table2.assoc.comb <- cbind(table2.assoc, subset(table2.assoc.adj, select = -c(values, values_check)))
+
+write.csv(table2.assoc.comb, "table2_assoc.csv")
+```
+Note that including a covariate in the model twice has no effect (it is ignored), so the adjusted analysis for age_r1, arv_time_among_more_than_4_mo_group, and sex_binary are just adjusted for the other 2 variables (IF we adjusted for the continuous version of the varaible, however, then this would be a different variable and the adjusted RR would be different)
+
+## Get association data for table3
+### unadjusted
+```{r}
+data4$DRM_binary <- ifelse(data4$DRM == "Yes", 1, 0) #Having a DRM is 1, not having one is 0
+
+table3.assoc <- lapply(variables, assoc_test, data = data4, outcome = "DRM_binary", include_counts = TRUE) %>%
+  bind_rows() %>%
+  rename(RR = assoc_results)
+```
+
+### adjusted
+```{r}
+data4$sex_binary <- ifelse(data4$sex == "Women", 1, 0)
+
+table3.assoc.adj <- lapply(variables, assoc_test, data = data4, outcome = "DRM_binary", covariates = c("sex_binary", "age_r1", "arv_time_among_more_than_4_mo_group")) %>%
+  bind_rows() %>%
+  rename(RR_adj = assoc_results)
+
+table3.assoc.comb <- cbind(table3.assoc, subset(table3.assoc.adj, select = -c(values, values_check)))
+
+
+write.csv(table3.assoc.comb, "table3_assoc.csv")
+```
+
+# Other analyses
+
+
+##Viral supression levels summaries
+```{r}
+VLforARV_4mo.plot  <- ggplot(data3, aes(hiv_vl_group)) +
+  geom_bar() +
+  geom_text(stat="count", aes(label=..count..), vjust=-1)
+VLforARV_4mo.plot
+
+ggsave("VL_among_ARV_4mo.png", VLforARV_4mo.plot)
+
+
+VLxARV.plot <- ggplot(data2, aes(x = arvcurrent2, fill = hiv_vl_group)) +
+  geom_bar(stat = "count", position="dodge") +
+  geom_text(stat="count", aes(label=..count..), position = position_dodge(width = 1), vjust = -1) +
+  scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
+   ylim(c(0,510))
+VLxARV.plot
+
+ggsave("VLxARV.plot.png", VLxARV.plot)
+```
+
+## CI for viral supression proportion
+```{r}
+binom.test(sum(data3$viralsup_onart == 1), sum(!is.na((data3$viralsup_onart))))
+```
+
+## Participants who were unavailabel for follow-up due to incarceration
+```{r}
+str(end_of_study$q6c_lostwhy) # 2 = jail
+
+incarcerated <- as.character(as.vector(end_of_study[end_of_study$q6c_lostwhy == 2 & !is.na(end_of_study$q6c_lostwhy), "ptid", drop = TRUE]))
+
+write.table(incarcerated, "lost_to_follow_up_jail.txt", row.names = FALSE, col.names = FALSE)
+```
+
+
+## Affect of time on ART for viral supression
+```{r}
+#ART time (continuous)
+glm.viral_sup_art_time = glm(viralsup ~ arv_time_totalm, data = data2, family = "binomial")
+
+OR <- exp(coef(glm.viral_sup_art_time))[-1]
+se_glm <- coeftest(glm.viral_sup_art_time, vcov = vcov(glm.viral_sup_art_time))
+CI95_lower <- exp(summary(glm.viral_sup_art_time)$coefficients[-1, 1] - 1.96 * se_glm[2, 2])
+CI95_upper <- exp(summary(glm.viral_sup_art_time)$coefficients[2, 1] + 1.96 * se_glm[-1, 2])
+  
+paste0(round(OR,3), " (", round(CI95_lower,3), "-", round(CI95_upper,3), ")")
+
+rm(OR, se_glm, CI95_lower, CI95_upper)
+
+#ART time (categorical)
+glm.viral_sup_art_time = glm(viralsup ~ arvcurrent2, data = data2, family = "poisson")
+
+OR <- exp(coef(glm.viral_sup_art_time))[-1]
+se_glm <- coeftest(glm.viral_sup_art_time, vcov = vcov(glm.viral_sup_art_time))
+CI95_lower <- exp(summary(glm.viral_sup_art_time)$coefficients[-1, 1] - 1.96 * se_glm[2, 2])
+CI95_upper <- exp(summary(glm.viral_sup_art_time)$coefficients[2, 1] + 1.96 * se_glm[-1, 2])
+
+levels(data2$arvcurrent2)  
+paste0(round(OR,3), " (", round(CI95_lower,3), "-", round(CI95_upper,3), ")")
+
+rm(OR, se_glm, CI95_lower, CI95_upper)
+```
+
+## Affect of time on ART for DRM
+```{r}
+data2$DRM_binary <- ifelse(data2$DRM == "Yes", 1, ifelse(data2$DRM == "No", 0, NA)) 
+
+#ART time (categorical)
+glm.viral_sup_art_time = glm(DRM_binary ~ arvcurrent2, data = data2, family = "poisson")
+
+RR <- exp(coef(glm.viral_sup_art_time))[-1]
+se_glm <- coeftest(glm.viral_sup_art_time, vcov = vcov(glm.viral_sup_art_time))
+CI95_lower <- exp(summary(glm.viral_sup_art_time)$coefficients[2, 1] - 1.96 * se_glm[2, 2])
+CI95_upper <- exp(summary(glm.viral_sup_art_time)$coefficients[2, 1] + 1.96 * se_glm[2, 2])
+
+levels(data2$arvcurrent2)  
+paste0(round(RR,3), " (", round(CI95_lower,3), "-", round(CI95_upper,3), ")")
+
+rm(RR, se_glm, CI95_lower, CI95_upper)
+```
+
+## Investigating further the relationship between methadone use and viral supression
+```{r}
+
+#Methadone and viral supression in the total dataset (PLWH)
+data2$viralsup_binary <- ifelse(data2$viralsup == 1, 0, ifelse(data2$viralsup == 0, 1, NA)) #reverse coding to match coding (viremia = 1) for viralsup_onart variable
+glm = glm(viralsup_binary ~ methadonenow_combo, data = data2, family = "poisson")
+
+RR <- exp(coef(glm))[-1]
+se_glm <- coeftest(glm, vcov = vcov(glm))
+CI95_lower <- exp(summary(glm)$coefficients[2, 1] - 1.96 * se_glm[2, 2])
+CI95_upper <- exp(summary(glm)$coefficients[2, 1] + 1.96 * se_glm[2, 2])
+
+paste0(round(RR,3), " (", round(CI95_lower,3), "-", round(CI95_upper,3), ")")
+
+rm(RR, se_glm, CI95_lower, CI95_upper)
+#ART and methadone use
+data2$arvcurrent_combo_binary <- ifelse(data2$arvcurrent_combo == "Yes", 1, 0) #Note: there are no NA values, so this is ok to do
+glm = glm(arvcurrent_combo_binary ~ methadonenow_combo, data = data2, family = "poisson")
+
+RR <- exp(coef(glm))[-1]
+se_glm <- coeftest(glm, vcov = vcov(glm))
+CI95_lower <- exp(summary(glm)$coefficients[2, 1] - 1.96 * se_glm[2, 2])
+CI95_upper <- exp(summary(glm)$coefficients[2, 1] + 1.96 * se_glm[2, 2])
+
+paste0(round(RR,3), " (", round(CI95_lower,3), "-", round(CI95_upper,3), ")")
+
+rm(RR, se_glm, CI95_lower, CI95_upper)
+
+
+
+#Methadone and viral supression among those on ART 4+ months - OR (instead of RR)
+glm = glm(viralsup_onart_binary ~ methadonenow_combo, data = data3, family = "binomial")
+
+OR <- exp(coef(glm))[-1]
+se_glm <- coeftest(glm, vcov = vcov(glm))
+CI95_lower <- exp(summary(glm)$coefficients[2, 1] - 1.96 * se_glm[2, 2])
+CI95_upper <- exp(summary(glm)$coefficients[2, 1] + 1.96 * se_glm[2, 2])
+
+paste0(round(OR,3), " (", round(CI95_lower,3), "-", round(CI95_upper,3), ")")
+```
+
+### Association between alcohol in last month and viral supression after controling for methadone use
+```{r}
+glm = glm(viralsup_onart_binary ~ alcohol_past_month_cat + age_r1 + arv_time_among_more_than_4_mo_group + sex_binary + methadonenow_combo, data = data3, family = "poisson")
+
+RR <- exp(coef(glm))[-1]
+se_glm <- coeftest(glm, vcov = vcov(glm))
+CI95_lower <- exp(summary(glm)$coefficients[2, 1] - 1.96 * se_glm[2, 2])
+CI95_upper <- exp(summary(glm)$coefficients[2, 1] + 1.96 * se_glm[2, 2])
+
+paste0(round(RR,3), " (", round(CI95_lower,3), "-", round(CI95_upper,3), ")")
+
+rm(RR, se_glm, CI95_lower, CI95_upper)
+```
+
+
+
+# Look into missing samples indicated by Bhavna
+```{r}
+missing_samps <- data.frame(ptid = c("662303951763", "275934394016", "295029664458", "790129422728", "244279796911", "158766878099", "431839830954", "746995398602", "945646218214"))
+
+missing_samps$in_table_1_2 <- missing_samps$ptid %in% data3$ptid
+missing_samps$in_table_4 <- missing_samps$ptid %in% data4$ptid
+missing_samps$On_ART_4months_suppressed <-missing_samps$ptid %in% On_ART_4months_suppressed$ptid
+missing_samps$On_ART_4months_unsuppressed <- missing_samps$ptid %in% On_ART_4months_unsuppressed$ptid
+missing_samps$On_ART_4months_unsuppressed_DRM <- missing_samps$ptid %in% On_ART_4months_unsuppressed_DRM$ptid
+missing_samps$On_ART_4months_unsuppressed_noDRM <-missing_samps$ptid %in% On_ART_4months_unsuppressed_noDRM$ptid
+
+(missing_samps <- merge(missing_samps, data2[,c("ptid", "arvcurrent2", "hiv_vl_group", "Resistance", "DRM", "shipment")], all.x = TRUE, all.y = FALSE))
+
+write.csv(missing_samps, file = "missing_samps_summary.csv")
+
+
+```
+
+## Troubleshootign the supressing lack of association between methadone use and viral supression - Note: don't use in results because some of these are examples of incorrect application of Poisson regression
+### Investigate impact of 0-1 vs 1-2 coding with Poisson regression
+```{r, eval = FALSE}
+#First, note that the coding for viral suppression is versed in data 3 (vs. data 2). Fix so that viral suppression = Yes is the higher value
+data3$viralsup_onart2 <- ifelse(data3$viralsup_onart == 2, 1, 2)
+
+#Assoc between methadone use and viral suppression among those on ART >4 months
+viral_sup_m.glm_P12 <- glm(viralsup_onart2~methadonenow2, data3, family = "poisson")
+exp(summary(viral_sup_m.glm_P12)$coefficients[2,1])
+exp(confint(viral_sup_m.glm_P12))
+#RR is association with viral non-suppression 
+
+#Now with 0-1 coding (more correct?)!
+data3$viralsup_onart_01 <- ifelse(data3$viralsup_onart2 == 2, 1, 0)
+data3$viralsup_onart_01 <- ifelse(data3$viralsup_onart2 == 1, 2, 0)
+
+viral_sup_m.glm_P01 <- glm(viralsup_onart_01~methadonenow2, data3, family = "poisson")
+exp(summary(viral_sup_m.glm_P01)$coefficients[2,1])
+exp(confint(viral_sup_m.glm_P01))
+
+#Binomial regression
+viral_sup_m.glm_B <- glm(viralsup_onart_01~methadonenow2, data3, family = "binomial")
+summary(viral_sup_m.glm_B)
+exp(summary(viral_sup_m.glm_B)$coefficients[2,1])
+exp(confint(viral_sup_m.glm_B))
+```
+Summary:   
+-None of the associations between methadone use and viral suppression use were significant in the sample of people on ART >=4 months  
+-Poisson regression using 0-1 coding yields a RR that is further from the null (but with a wider CI) than Poisson regression using 1-2 coding.  
+-Logistic regression yields a OR that is still non-significant but further from the null than the RR with Poisson regression.  
+-Q: which category should be the reference in Poisson?  
+
+
+### Investigate impact of filtering by ART use (and ART use for >=4 months) - using binomial regression to eliminate effect of coding - I'm starting with the data2 dataset (all individuals living with HIV and filtering from there)
+```{r}
+#association of methadone use on viral suppression 
+viral_sup_m.glm <- glm(viralsup~methadonenow_combo, data2, family = "binomial")
+summary(viral_sup_m.glm)
+exp(summary(viral_sup_m.glm)$coefficients[2,1])
+exp(confint(viral_sup_m.glm))
+
+#association of methadone use on art
+art_m.glm <- glm(arv~methadonenow_combo, data2, family = "binomial")
+summary(art_m.glm)
+exp(summary(art_m.glm)$coefficients[2,1])
+exp(confint(art_m.glm))
+
+#association of art on viral suppression (obviously this should be large)
+viral_sup_art.glm <- glm(viralsup~arvcurrent_combo, data2, family = "binomial")
+summary(viral_sup_art.glm )
+exp(summary(viral_sup_art.glm )$coefficients[2,1])
+exp(confint(viral_sup_art.glm))
+
+#association between ARV time (>=4 months or <4 months) and viral suppression
+data2$arv_group2 <- ifelse(data2$arvcurrent2 == "Yes (4 or more months)", "morethan4", ifelse(data2$arvcurrent2 == "Yes (less than 4 months)", "lessthan4", NA))
+viral_sup_art_group.glm <- glm(viralsup~arv_group2, data2, family = "binomial")
+summary(viral_sup_art.glm )
+exp(summary(viral_sup_art_group.glm )$coefficients[2,1])
+exp(confint(viral_sup_art_group.glm))
+
+#association between ARV time (>=4 months or <4 months) and methadone use
+m_art_group.glm <- glm(methadonenow_combo~arv_group2, data2, family = "binomial")
+summary(m_art_group.glm)
+exp(summary(m_art_group.glm)$coefficients[2,1])
+exp(confint(m_art_group.glm))
+
+#association of methadone use on viral suppression AFTER filtering to only on ART
+data2.art <- data2 %>% filter(arvcurrent_combo == "Yes")
+nrow(data2.art)
+viral_sup_m.glm2 <- glm(viralsup~methadonenow_combo, data2.art, family = "binomial")
+summary(viral_sup_m.glm2)
+exp(summary(viral_sup_m.glm2)$coefficients[2,1])
+exp(confint(viral_sup_m.glm2))
+
+#association of methadone use on viral suppression AFTER filtering to only on ART >= 4 months
+data2.art4month <- data2 %>% filter(arvcurrent2 == "Yes (4 or more months)")
+nrow(data2.art4month)
+viral_sup_m.glm3 <- glm(viralsup~methadonenow_combo, data2.art4month, family = "binomial")
+summary(viral_sup_m.glm3)
+exp(summary(viral_sup_m.glm3)$coefficients[2,1])
+exp(confint(viral_sup_m.glm3))
+```
+Summary:  
+-Viral suppression is strongly associated with methadone use among PLWH  
+methadone use is strongly associated with ART use  
+-ART use is strongly associated with viral suppression; therefore, ART use is likely to be a strong con-founder in the relationship between methadone use and viral suppression  
+-Consistent with this, the association between methadone use and viral suppression is no longer significant after filtering to only those on ART (although the OR is still large)  
+-Viral suppression is significantly higher among those on ART >=4 months vs <4 months (but note that there are only 43 peopel on ART <4 months)  
+-There is a modest and non-significant association between ART use >=4 months (vs. < 4 months) and beign on methadone  
+-Further filtering to only those on ART >= 4 months (after already filtering to those on ART has minimal impact on the association between methadone use and viral supression, likely because of low power and the minimal association between methdone use and time on ART (ART group)  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#Backup
+
+# Creating descriptive tables - not using
+```{r echo = FALSE, eval = FALSE}
+## Creating tables
+rndr_cts = function(x) {
+    with(stats.default(x),
+         sprintf("mean(SD): %0.1f (%0.1f)\nmedian(IQR): %0.1f (%0.1f, %0.1f)", MEAN, SD, MEDIAN, Q1, Q3))
+}
+
+rndr_cat = function(x) {
+    c("", sapply(stats.default(x), function(y) with(y,
+        sprintf("%d (%0.1f %%)", FREQ, PCT))))
+}
+```
+
+## Basic table
+```{r echo = FALSE, eval = FALSE}
+# Table of selected index characteristics, stratified by viral suppression status (viralsup_onart)
+table1_by_enrollment_type <- table1( ~
+         sex +
+         age +
+         region + 
+         source +
+         relationship_status + 
+         sexual_or_domestic_abuse +
+         lab_hcv_status +
+         hcv_treatment_bi +
+         lastsexcondom_bi +
+         rcdmoneysex +
+         sexwithhiv +
+         sexpartners3months +
+         heterosexual_only +
+         alcoholtimesmonth +
+         methadonenow2 + 
+         years_injecting_group +
+         viralsup_onart
+       | #####,
+       data = data_exclude_viral_supression_NA, 
+       render.continuous = rndr_cts,
+       render.categorical = rndr_cat,
+       numeric.test = "notest",
+       cat.test = "notest",
+       overall = "Total")
+
+table1_by_enrollment_type
+
+write.csv(as.data.frame(table1_by_enrollment_type), file = "table1_by_enrollment_type.csv")
+```
+
+## Viral suppression
+```{r echo = FALSE, eval = FALSE}
+#Get a dataframe of only those with a viral suppression value (ie. excluding those who are NA)
+data_exclude_viral_supression_NA <- data2 %>%
+  filter(!is.na(viralsup_onart))
+
+# Table of selected index characteristics, stratified by viral suppression status (viralsup_onart)
+table1_viral_supression <- table1(~ sex +
+         age +
+         region + 
+         source +
+         relationship_status + 
+         sexual_or_domestic_abuse +
+         lab_hcv_status +
+         hcv_treatment_bi +
+         lastsexcondom_bi +
+         rcdmoneysex +
+         sexwithhiv +
+         sexpartners3months +
+         heterosexual_only +
+         alcoholtimesmonth +
+         methadonenow2 + 
+         years_injecting_group
+       | viralsup_onart, #Note: This variable only counts people currently on ART as being viraly suppressed (since those not on ART should not be viraly suppressed)
+       data = data_exclude_viral_supression_NA, 
+       render.continuous = rndr_cts,
+       render.categorical = rndr_cat,
+       overall = "Total")
+
+table1_viral_supression
+
+write.csv(as.data.frame(table1_viral_supression), file = "table1_viral_suppression.csv")
+```
+
+
+## Creating descriptive tables - Drug resistant mutations
+```{r echo = FALSE, eval = FALSE}
+#filter data to only those not virally supressed and on ART
+data_not_suppressed_and_current_ART <- data2 %>%
+  filter(hiv_vl_group == "greater than 1000" & arvcurrent_combo == "Yes" &  !is.na(viralsup_onart) & !is.na(DRM))
+nrow(data_not_suppressed_and_current_ART)
+
+# Table of selected index characteristics, stratified by viral suppression status (viralsup_onart)
+table1_DRM <- table1(~ sex +
+         age +
+         region + 
+         source +
+         relationship_status + 
+         sexual_or_domestic_abuse +
+         lab_hcv_status +
+         hcv_treatment_bi +
+         lastsexcondom_bi +
+         rcdmoneysex +
+         sexwithhiv +
+         sexpartners3months +
+         heterosexual_only +
+         alcoholtimesmonth +
+         methadonenow2 +
+         years_injecting_group
+       | DRM, 
+       data = data_not_suppressed_and_current_ART, 
+       render.continuous = rndr_cts,
+       render.categorical = rndr_cat,
+       overall = "Total")
+
+write.csv(as.data.frame(table1_DRM), file = "table1_DRM.csv")
+```
+
+
+# Create a table with the same filter criteria at data2 but without variable manipulation
+```{r}
+data.temp2 <- data %>%
+  dplyr::group_by(ptid) %>%
+  dplyr::arrange(hiv_status_final, ymd(enrollment_date), .by_group = TRUE) %>%
+  dplyr::slice(1L) %>%
+  filter(ptid %in% samples$ptid) %>%
+  filter(hiv_status_final == 1)
+```
