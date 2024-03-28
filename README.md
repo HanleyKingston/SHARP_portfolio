@@ -10,7 +10,7 @@ CAUTION: This is functioning as a personal work portfolio. Please contact me to 
 Connects internal study participant IDS (ptids), generated seqeunce IDS, and lanl sequence IDs  
 **Inputs**  
 participant and sample metadata (combined dataframe)  
-**Outputs** 
+**Outputs**  
 Key for seqeunce IDs (for internal use or by request only)  
 ### 2. filter_hiv_published_sequences.Rmd  
 **Inputs**  
@@ -24,7 +24,7 @@ Filtered fasta file of previosuly published sequences for use in analysis
 Converts REGA and COMET sequence genotype data to relevant categories
 **Inputs**  
 REGA and COMET genotype estimates (note: should make into 2 seperate scripts)  
-**Outputs**  
+**Outputs**   
 Updated REGA and COMET genotype estimate files
 ### 4. clean_metadata.Rmd  
 Combines multiple SHARP participant metadata, sample metadata, AND metadata associated with previously published sequences
@@ -32,7 +32,7 @@ Combines multiple SHARP participant metadata, sample metadata, AND metadata asso
 SHARP metadata: index, partners, and samples data frames  
 previously published sequence metadata (note: this is very limited)  
 REGA and COMET genotype estimates (note: REGA genotypes were used in trasmission trends analysis and COMET genotypes were used in APS analysis)  
-**Outputs**
+**Outputs**  
 Single metadata file containing SHARP and previously published seqeunces, with genotype information  
 ### 5. Perform alignments using in Geneious Prime  
 see "onedrive/SHARP_Study/Phylogenetics/Generalized workflow/HIV_analysis_steps"
