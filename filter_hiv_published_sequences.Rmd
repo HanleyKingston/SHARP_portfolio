@@ -1,0 +1,133 @@
+---
+title: "filter_hiv_published_sequences"
+author: "Hanley"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Read in a fasta file and extract subsets (as fasta files) based on genotype
+## Also save ptid lists for all individuals within each subset
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(seqinr)
+library(dplyr)
+library(readxl)
+
+#IMPORTANT: to save outputs, set this to TRUE before running (default is FALSE to avoid accidentally overwriting files)
+save_outputs <- FALSE
+```
+
+# Read in data
+```{r}
+# published HIV sequences
+hiv_published.fasta <- seqinr::read.fasta("../HIV/ref seqs from George/4058-Kenyan-HIV1pol-sequences.fasta", as.string = TRUE, forceDNAtolower = FALSE)
+
+# metadata for published sequences
+HIV_published <- read_excel("../HIV/ref seqs from George/4058-kenyan-HIVpol-metadata.xlsx", sheet = 1) %>%
+  mutate(sampling_year = as.numeric(sampling_year))
+```
+
+# Read in and visualize metadata for published sequencees
+```{r}
+#Look at counts for categorical data
+HIV_published %>%
+  select(-c("accession", "ptid", "Sequence.name")) %>%
+  apply(2, table)
+  
+#Look at the PWID sequences
+HIV_published %>%
+  filter(risk == "IDU") %>%
+  {table(.$province, .$year, useNA = "ifany")}
+```
+Since the coastal IDU sequences were colelcted in 2010, I will use 2010 as the cut-off for all sequences
+
+# Filter published HIV sequences based on:
+Sequences from years 2010 - 2021  
+From region Coast or Nairobi  
+Not INF (<15 yrs old)
+```{r}
+#Summarize data
+HIV_published %>%
+  #print number of samples passing each filter criteria
+  dplyr::summarize(
+    year_2001 = sum(sampling_year >= 2001, na.rm = TRUE),
+    year_2010 = sum(sampling_year >= 2010, na.rm = TRUE),
+    non_INF_risk = sum(risk != "INF"),
+    Coast_or_Nairobi = sum(region == "Coast" | region == "Nairobi")
+    )
+
+# Post 2000 (known risk group, no under 15 risk group)
+HIV_published.Post2000 <- HIV_published %>%
+  #apply filters:
+  filter(!is.na(sampling_year) & sampling_year >= 2001 &
+           risk != "INF" & !is.na(risk)) %T>%
+  {print(paste0("total sequences (2001+, known risk, & not <15 years):", nrow(.)))} %>%
+  #remove carrot from names
+  mutate(taxa = sub("^>", "", .$Sequence.name),
+         #NAs in the accession column are not being treated as NAs, fix this
+         Accession = case_when(accession == "NA" ~ as.character(NA),
+                               TRUE ~ accession))
+
+HIV_published.Post2000_CoastNairobi <- HIV_published.Post2000 %>%
+  filter(region == "Coast" | region == "Nairobi")
+print(paste0("total sequences (2001+, Coast & Nairobi only, known risk, & not <15 years):", nrow(HIV_published.Post2000_CoastNairobi)))
+
+# 2010 and later seqs (for use in APS analysis)
+HIV_published.Post2009_CoastNairobi <- HIV_published.Post2000_CoastNairobi %>%
+  filter(sampling_year >= 2010)
+print(paste0("total sequences (2010+, Coast & Nairobi only, known risk, & not <15 years):", nrow(HIV_published.Post2009_CoastNairobi)))
+         
+#Look at counts for categorical data
+HIV_published.Post2000 %>%
+  select(-c("accession", "ptid", "Sequence.name")) %>%
+  apply(2, table)
+
+#Look at counts for categorical data
+HIV_published.Post2000_CoastNairobi %>%
+  select(-c("accession", "ptid", "Sequence.name")) %>%
+  apply(2, table)
+
+#Look at counts for categorical data
+HIV_published.Post2009_CoastNairobi %>%
+  select(-c("accession", "patient-Id", "taxa")) %>%
+  apply(2, table)
+```
+
+#Save an unaligned fasta file by removing gaps - use this as starting sequences in Geneious
+```{r}
+hiv_published.fasta.unaligned <- lapply(hiv_published.fasta, function(X){gsub("-*", "", X)})
+write.fasta(sequences = hiv_published.fasta.unaligned, names = names(hiv_published.fasta.unaligned), "../HIV/ref seqs from George/hiv_published.all_unaligned.fasta")
+```
+
+# Save filtered metadata
+### default - don't run
+```{r, eval = save_outputs}
+write.csv(HIV_published.Post2000, "../HIV/ref seqs from George/hiv_published_3791.metadata.xlsx") #Note: after removing samples with no date (4/12/23), this is 3615; however, I am going to use the original 3791 list for alignment and filter the no-date samples after the fact (when I filter for A1 subtype)
+write.csv(HIV_published.Post2000_CoastNairobi, "../HIV/ref seqs from George/hiv_published_2389.metadata.xlsx")
+write.csv(HIV_published.Post2009_CoastNairobi, "../HIV/ref seqs from George/hiv_published_982.metadata.xlsx")
+
+#Also save a list of just accession numbers
+write.table(HIV_published.Post2000$taxa, "../HIV/ref seqs from George/hiv_published_3791.taxa_numbers.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(HIV_published.Post2000_CoastNairobi$taxa, "../HIV/ref seqs from George/hiv_published_2389.taxa_numbers.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(HIV_published.Post2009_CoastNairobi$taxa, "../HIV/ref seqs from George/hiv_published_982.taxa_numbers.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+# Filter FASTA file
+```{r}
+hiv_published.fasta <- seqinr::read.fasta("../HIV/ref seqs from George/4058-Kenyan-HIV1pol-sequences.fasta", as.string = TRUE, forceDNAtolower = FALSE)
+
+#filter fasta file
+hiv_published.fasta.Post2000 <- hiv_published.fasta[names(hiv_published.fasta) %in% HIV_published.Post2000$taxa]
+hiv_published.fasta.Post2000_CoastNairobi <- hiv_published.fasta[names(hiv_published.fasta) %in% HIV_published.Post2000_CoastNairobi$taxa]
+hiv_published.fasta.Post2009_CoastNairobi <- hiv_published.fasta[names(hiv_published.fasta) %in% HIV_published.Post2009_CoastNairobi$taxa]
+```
+
+# Save
+### Default -don't run
+```{r, eval = save_outputs}
+#save fasta file
+write.fasta(sequences = hiv_published.fasta.Post2000, names = names(hiv_published.fasta.Post2000), "../HIV/ref seqs from George/hiv_published_3791.all.fasta")
+write.fasta(sequences = hiv_published.fasta.Post2000_CoastNairobi, names = names(hiv_published.fasta.Post2000_CoastNairobi), "../HIV/ref seqs from George/hiv_published_2389.all.fasta")
+write.fasta(sequences = hiv_published.fasta.Post2009_CoastNairobi, names = names(hiv_published.fasta.Post2009_CoastNairobi), "../HIV/ref seqs from George/hiv_published_982.all.fasta")
+```

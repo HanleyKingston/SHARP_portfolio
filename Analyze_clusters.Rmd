@@ -1,0 +1,1299 @@
+---
+title: "Analyze_clusters"
+author: "Hanley"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(stringr)
+library(seqinr)
+library(beastier)
+
+library(ape)
+```
+
+# Read in data
+
+## Metadata
+```{r}
+meta_data <- readRDS("../metadata/participants.rds") %>% # metadata for all sequences
+  filter(HIV_seq_available == "Yes")
+
+SHARP.SequenceNames <- meta_data %>% filter(source == "SHARP") %>% pull(annotated_name)
+```
+
+
+## NOT USING - Cluster membership data - load cluster membership tables( each row is a sequence)
+```{r cluster membership - aLRT threhold .9 - not using, eval = FALSE}
+
+# SHARP only
+
+## Cluster membership by sequence (each row is a sequence)
+SHARP_A1_1.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_only/A1/Cluster1.5/hiv_196_SHARP_A1_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1"))) %>%
+  dplyr::rename(Cluster_SHARP_1.5 = ClusterNumber)
+SHARP_A1_4.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_only/A1/Cluster4.5/hiv_196_SHARP_A1_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1"))) %>%
+  dplyr::rename(Cluster_SHARP_4.5 = ClusterNumber)
+
+
+# SHARP and published
+
+SHARPandPublished_A1_1.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/A1/Cluster1.5/hiv_2681_SHARP_and_published_A1_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1"))) %>%
+  dplyr::rename(Cluster_1.5 = ClusterNumber)
+SHARPandPublished_A1_4.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/A1/Cluster4.5/hiv_2681_SHARP_and_published_A1_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1"))) %>%
+  dplyr::rename(Cluster_4.5 = ClusterNumber)
+
+SHARPandPublished_C_1.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/C/Cluster1.5/hiv_302_SHARP_and_published_C_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "C"))) %>%
+  dplyr::rename(Cluster_1.5 = ClusterNumber)
+SHARPandPublished_C_4.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/C/Cluster4.5/hiv_302_SHARP_and_published_C_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "C"))) %>%
+  dplyr::rename(Cluster_4.5 = ClusterNumber)
+
+SHARPandPublished_D_1.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/D/Cluster1.5/hiv_450_SHARP_and_published_D_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "D"))) %>%
+  dplyr::rename(Cluster_1.5 = ClusterNumber)
+SHARPandPublished_D_4.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/D/Cluster4.5/hiv_450_SHARP_and_published_D_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "D"))) %>%
+  dplyr::rename(Cluster_4.5 = ClusterNumber)
+```
+
+
+## NOT USING - Cluster data (each row is a cluster)
+```{r cluster data - aLRT threhold .9 - not using, eval = FALSE}
+
+# SHARP only
+SHARP_A1_1.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_only/A1/Cluster1.5/hiv_196_SHARP_A1_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1")))
+
+SHARP_A1_4.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_only/A1/Cluster4.5/hiv_196_SHARP_A1_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1")))
+
+
+# SHARP and published
+
+SHARPandPublished_A1_1.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/A1/Cluster1.5/hiv_2681_SHARP_and_published_A1_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1")))
+SHARPandPublished_A1_4.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/A1/Cluster4.5/hiv_2681_SHARP_and_published_A1_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1")))
+
+SHARPandPublished_C_1.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/C/Cluster1.5/hiv_302_SHARP_and_published_C_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "C")))
+SHARPandPublished_C_4.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/C/Cluster4.5/hiv_302_SHARP_and_published_C_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "C")))
+
+SHARPandPublished_D_1.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/D/Cluster1.5/hiv_450_SHARP_and_published_D_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "D")))
+SHARPandPublished_D_4.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/D/Cluster4.5/hiv_450_SHARP_and_published_D_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "D")))
+```
+
+
+######
+
+
+
+## Cluster membership data - load cluster membership tables (each row is a sequence)
+```{r cluster membership - no aLRT threhold}
+
+# SHARP only
+
+## Cluster membership by sequence (each row is a sequence)
+SHARP_A1_1.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_only/A1/Cluster1.5noSupportThresh/hiv_196_SHARP_A1_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1"))) %>%
+  dplyr::rename(Cluster_SHARP_1.5 = ClusterNumber)
+SHARP_A1_4.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_only/A1/Cluster4.5noSupportThresh/hiv_196_SHARP_A1_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1"))) %>%
+  dplyr::rename(Cluster_SHARP_4.5 = ClusterNumber)
+
+
+# SHARP and published
+
+SHARPandPublished_A1_1.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/A1/Cluster1.5noSupportThresh/hiv_2681_SHARP_and_published_A1_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1"))) %>%
+  dplyr::rename(Cluster_1.5 = ClusterNumber)
+SHARPandPublished_A1_4.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/A1/Cluster4.5noSupportThresh/hiv_2681_SHARP_and_published_A1_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1"))) %>%
+  dplyr::rename(Cluster_4.5 = ClusterNumber)
+
+SHARPandPublished_C_1.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/C/Cluster1.5noSupportThresh/hiv_302_SHARP_and_published_C_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "C"))) %>%
+  dplyr::rename(Cluster_1.5 = ClusterNumber)
+SHARPandPublished_C_4.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/C/Cluster4.5noSupportThresh/hiv_302_SHARP_and_published_C_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "C"))) %>%
+  dplyr::rename(Cluster_4.5 = ClusterNumber)
+
+SHARPandPublished_D_1.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/D/Cluster1.5noSupportThresh/hiv_450_SHARP_and_published_D_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "D"))) %>%
+  dplyr::rename(Cluster_1.5 = ClusterNumber)
+SHARPandPublished_D_4.5 <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/D/Cluster4.5noSupportThresh/hiv_450_SHARP_and_published_D_clusterPicks_list.txt", header = TRUE) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "D"))) %>%
+  dplyr::rename(Cluster_4.5 = ClusterNumber)
+```
+
+
+## Cluster data (each row is a cluster)
+```{r cluster data - no aLRT threhold}
+
+# SHARP only
+SHARP_A1_1.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_only/A1/Cluster1.5noSupportThresh/hiv_196_SHARP_A1_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1")))
+
+SHARP_A1_4.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_only/A1/Cluster4.5noSupportThresh/hiv_196_SHARP_A1_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1")))
+
+
+# SHARP and published
+
+SHARPandPublished_A1_1.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/A1/Cluster1.5noSupportThresh/hiv_2681_SHARP_and_published_A1_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1")))
+SHARPandPublished_A1_4.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/A1/Cluster4.5noSupportThresh/hiv_2681_SHARP_and_published_A1_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "A1")))
+
+SHARPandPublished_C_1.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/C/Cluster1.5noSupportThresh/hiv_302_SHARP_and_published_C_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "C")))
+SHARPandPublished_C_4.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/C/Cluster4.5noSupportThresh/hiv_302_SHARP_and_published_C_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "C")))
+
+SHARPandPublished_D_1.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/D/Cluster1.5noSupportThresh/hiv_450_SHARP_and_published_D_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "D")))
+SHARPandPublished_D_4.5.clusters <- read.table("../HIV/GeneiousandIQtree/SHARP_and_published/D/Cluster4.5noSupportThresh/hiv_450_SHARP_and_published_D_clusterPicks_log.txt", skip = 20, header = TRUE, sep = "\t", fill = TRUE, na.strings = "NA") %>%
+  filter(row_number() != n()) %>%
+  mutate(ClusterNumber = ifelse(ClusterNumber == -1, as.character(NA), paste0(ClusterNumber, "D")))
+```
+
+
+
+
+
+### Fasta files - to later extract PWID seqs only
+```{r}
+#un-annotated fasta - I will extract PWID clusters from this
+SHARP_and_published_Kenya.A1.fasta <- read.fasta("../HIV/GeneiousandIQtree/SHARP_and_published/A1/hiv_2681_SHARP_and_published_A1_annotated_names.fasta")
+
+SHARP_and_published_Kenya.C.fasta <- read.fasta("../HIV/GeneiousandIQtree/SHARP_and_published/C/hiv_302_SHARP_and_published_C_annotated_names.fasta")
+
+SHARP_and_published_Kenya.D.fasta <- read.fasta("../HIV/GeneiousandIQtree/SHARP_and_published/D/hiv_450_SHARP_and_published_D_annotated_names.fasta")
+
+```
+
+
+### Checks
+```{r}
+all(SHARP_A1_1.5$SequenceName %in% meta_data$annotated_name)
+all(SHARP_A1_4.5$SequenceName %in% meta_data$annotated_name)
+all(SHARPandPublished_A1_1.5$SequenceName %in% meta_data$annotated_name)
+all(SHARPandPublished_A1_4.5$SequenceName %in% meta_data$annotated_name)
+```
+
+### Combine data
+```{r}
+#Put different subtypes into 1 table
+cluster_memberships.1.5 <- SHARPandPublished_A1_1.5 %>% rbind(SHARPandPublished_C_1.5) %>%
+  rbind(SHARPandPublished_D_1.5)
+cluster_memberships.4.5 <- SHARPandPublished_A1_4.5 %>% rbind(SHARPandPublished_C_4.5) %>%
+  rbind(SHARPandPublished_D_4.5)
+
+clusters_data <- meta_data %>%
+  select(annotated_name, source, sampling_year, risk, risk2.F, risk3.F, risk4.F, region, region.CN, region2.F, sex, shareneedles) %>%
+  left_join(cluster_memberships.1.5, by = c("annotated_name" = "SequenceName")) %>%
+  left_join(cluster_memberships.4.5, by = c("annotated_name" = "SequenceName")) %>%
+  left_join(SHARP_A1_1.5, by = c("annotated_name" = "SequenceName")) %>%
+  left_join(SHARP_A1_4.5, by = c("annotated_name" = "SequenceName"))
+```
+
+
+
+### Visualize clusters - Just for illustration purposes
+```{r, eval = FALSE}
+tree.C <- read.tree("../HIV/GeneiousandIQtree/SHARP_and_published/C/hiv_302_SHARP_and_published_C.treefile")
+
+#Visualize C clusters on tree
+color_palette <- sample(rainbow(length(unique(SHARPandPublished_C_4.5$Cluster_4.5))))
+tree.C.tibble <- as_tibble(tree.C)
+tree.C.meta <- left_join(tree.C.tibble, SHARPandPublished_C_4.5, by = c("label" = "SequenceName")) %>%
+  mutate(cluster = as.character(Cluster_4.5))
+clust_tree.c <- ggtree(tree.C) %<+% tree.C.meta +
+  geom_tippoint(shape = 21, aes(colour = cluster, fill = cluster)) +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = color_palette) + 
+  scale_colour_manual(values = sample(color_palette))
+
+
+ggsave(clust_tree.c, file = "../results/regional trends/cluster/example_tree_clust.C.png", width = 8, height = 10.5, units = "in")
+```
+
+# Checks
+```{r}
+clusters_data %>%
+  filter(!is.na(Cluster_4.5) & Cluster_4.5 != 1) %>%
+  select(region) %>%
+  table(useNA = "ifany")
+```
+
+
+# Data summaries
+
+### Get summary tables
+```{r}
+summarize_by_cluster <- function(data = clusters_data, cluster){
+  Cluster.summary <- data %>%
+  dplyr::group_by(!!(sym(cluster))) %>%
+  dplyr::summarize(n_tips=n(), 
+                   year_range = paste(min(sampling_year), "-", max(sampling_year)),
+                   year_min = as.numeric(min(sampling_year)),
+                   sexes = paste("Male:", sum(sex == "Male", na.rm = TRUE), "Female:",
+                                 sum(sex == "Female", na.rm = TRUE), "Missing:", sum(is.na(sex))),
+                   
+                   n_unique_risks = n_distinct(risk2.F, na.rm = TRUE),
+                   risks = paste(sort(unique(risk2.F)), collapse = ", "),
+                   sources = paste(sort(unique(source)), collapse = ", "),
+                   
+                   sharing_needles = sum(shareneedles == "Yes", na.rm = TRUE),
+                   
+                   N_FSW = sum(risk2.F == "FSW"),
+                   N_FSW_PWID = sum(risk2.F == "FSW_PWID"),
+                   N_HET = sum(risk2.F == "HET"),
+                   N_MSM = sum(risk2.F == "MSM"),
+                   N_MSM_PWID = sum(risk2.F == "MSM_PWID"),
+                   N_PWID = sum(risk2.F == "PWID"),
+                   P_FSW = round(sum(risk2.F == "FSW")/n(),3),
+                   P_FSW_PWID = round(sum(risk2.F == "FSW_PWID")/n(),3),
+                   P_HET = round(sum(risk2.F == "HET")/n(),3),
+                   P_MSM = round(sum(risk2.F == "MSM")/n(),3),
+                   P_MSM_PWID = round(sum(risk2.F == "MSM_PWID")/n(),3),
+                   P_PWID = round(sum(risk2.F == "PWID")/n(),3),
+                   
+                   n_unique_regions = n_distinct(region, na.rm = TRUE),
+                   regions = paste(sort(unique(region)), collapse = ", "),
+                   
+                   N_Central = sum(region == "Central"),
+                   N_Coast = sum(region == "Coast"),
+                   N_Eastern = sum(region == "Eastern"),
+                   N_Nairobi = sum(region == "Nairobi"),
+                   N_Nyanza = sum(region == "Nyanza"),
+                   N_R = sum(region == "Rvalley"),
+                   N_Western = sum(region == "Western"),
+                   
+                   P_Central = round(sum(region == "Central")/n(),3),
+                   P_Coast = round(sum(region == "Coast")/n(),3),
+                   P_Eastern = round(sum(region == "Eastern")/n(),3),
+                   P_Nairobi = round(sum(region == "Nairobi")/n(),3),
+                   P_Nyanza = round(sum(region == "Nyanza")/n(),3),
+                   P_Rvalley = round(sum(region == "Rvalley")/n(),3),
+                   P_Western = round(sum(region == "Western")/n(),3)) %>%
+    
+    dplyr::rename(ClusterNumber = !!sym(cluster)) %>%
+    mutate(ClusterNumber = as.character(ClusterNumber),
+           ClusterSize = case_when(n_tips == 2 ~ "dyad",
+                                   n_tips >= 3 & n_tips < 14 ~ "network",
+                                   n_tips >= 14 ~ "large_cluster") %>%
+             factor(levels = c("dyad", "network", "large_cluster")),
+           year_group = ifelse(year_min <= 2015, "pre_2015", "post_2015")) %>%
+    mutate(risk_P = paste(
+      ifelse(P_FSW != 0, P_FSW, ""),
+      ifelse(P_FSW_PWID != 0, P_FSW_PWID, ""),
+      ifelse(P_HET != 0, P_HET, ""),
+      ifelse(P_MSM != 0, P_MSM, ""),
+      ifelse(P_MSM_PWID != 0, P_MSM_PWID, ""),
+      ifelse(P_PWID != 0, P_PWID, ""),
+      sep = ", ") %>%
+        gsub("(,\\s)+", ", ", .) %>% gsub("(^,\\s)" , "", .)  %>% gsub("(,\\s$)" , "", .),
+      region_P = paste(
+        ifelse(P_Central != 0, P_Central, ""),
+        ifelse(P_Coast != 0, P_Coast, ""),
+        ifelse(P_Eastern != 0, P_Eastern, ""),
+        ifelse(P_Nairobi != 0, P_Nairobi, ""),
+        ifelse(P_Nyanza != 0, P_Nyanza, ""),
+        ifelse(P_Rvalley != 0, P_Rvalley, ""),
+        ifelse(P_Western != 0, P_Western, ""),
+        sep = ", ") %>%
+          gsub("(,\\s)+", ", ", .) %>% gsub("(^,\\s)" , "", .)  %>% gsub("(,\\s$)" , "", .)) %>%
+    
+    filter(!is.na(ClusterNumber))
+  
+  return(Cluster.summary)
+}
+
+
+#Put different subtypes (for cluster tables output by ClusterPicker) into 1 table
+clusters.1.5 <- SHARPandPublished_A1_1.5.clusters %>% rbind(SHARPandPublished_C_1.5.clusters) %>%
+  rbind(SHARPandPublished_D_1.5.clusters)
+clusters.4.5 <- SHARPandPublished_A1_4.5.clusters %>% rbind(SHARPandPublished_C_4.5.clusters) %>%
+  rbind(SHARPandPublished_D_4.5.clusters)
+
+
+#SHARP 1.5
+Cluster_SHARP1.5.summary <- summarize_by_cluster(cluster = "Cluster_SHARP_1.5") %>%
+  full_join(SHARP_A1_1.5.clusters, by = "ClusterNumber")
+
+#SHARP 4.5
+Cluster_SHARP4.5.summary <- summarize_by_cluster(cluster = "Cluster_SHARP_4.5") %>%
+  full_join(SHARP_A1_4.5.clusters, by = "ClusterNumber")
+
+#SHARP and Published 1.5
+Cluster_SHARPandPublished1.5.summary <- summarize_by_cluster(cluster = "Cluster_1.5") %>%
+  full_join(clusters.1.5, by = "ClusterNumber")
+
+# SHARP and Published 4.5
+Cluster_SHARPandPublished4.5.summary <- summarize_by_cluster(cluster = "Cluster_4.5") %>%
+  full_join(clusters.4.5, by = "ClusterNumber")
+nrow(Cluster_SHARPandPublished4.5.summary) #800 clusters w/ 4.5% threhsold
+
+#Look at the large PWID cluster:
+Cluster_SHARPandPublished4.5.summary %>% filter(ClusterNumber == "81A1") %>% select(ClusterNumber, n_tips, ClusterSize, year_range, sources, risks, n_unique_risks, N_PWID, N_HET)
+PWID_clust.SequenceNames <- Cluster_SHARPandPublished4.5.summary %>% filter(ClusterNumber == "81A1") %>% pull(TipNames) %>% strsplit(", ") %>% unlist() %>% gsub("\\[|\\]", "", .)
+write.table(PWID_clust.SequenceNames, "../results/regional trends/cluster/PWID_clust.SequenceNames.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+```
+
+**IMPORTANT!** If cluster analysis is redone, 81A1 may not longer refer to the large clusters, and this must be updated!
+
+
+
+### Counts of PWID sequences in clusters
+```{r}
+cluster_memberships.4.5 %>% filter(grepl("PWID", SequenceName)) %>% nrow() #301 A1, C, or D subtype PWID seqs
+cluster_memberships.4.5 %>% filter(!is.na(Cluster_4.5) & grepl("PWID", SequenceName)) %>% nrow() #190 of these PWID seqs are in clusters
+cluster_memberships.4.5 %>% filter(!is.na(Cluster_4.5) & grepl("PWID", SequenceName) & !(SequenceName %in% PWID_clust.SequenceNames)) %>%
+  nrow() #149 after excluding 41 PWID seq cluster
+
+# Extract number of subtype A1, C, or D seqeunces from PWID in SHARP study 
+PWID_seqs <- cluster_memberships.4.5 %>% filter(grepl("PWID", SequenceName) & (SequenceName %in% SHARP.SequenceNames))
+nrow(PWID_seqs) #243 PWID seqs of subtype A1, C, or D from SHARP study 
+
+# 0.045 threshold
+SHARP_PWIDs_inClust <- cluster_memberships.4.5 %>% filter(!is.na(Cluster_4.5) & (SequenceName %in% SHARP.SequenceNames) & !(SequenceName %in% PWID_clust.SequenceNames)) 
+nrow(SHARP_PWIDs_inClust) #142 PWID seqs from SHARP study are in clusters at dist 0.045
+
+# 0.015 threshold
+SHARP_PWIDs_inClust0.15 <- cluster_memberships.1.5 %>% filter(!is.na(Cluster_1.5) & (SequenceName %in% SHARP.SequenceNames) & !(SequenceName %in% PWID_clust.SequenceNames)) 
+nrow(SHARP_PWIDs_inClust0.15) #142 PWID seqs from SHARP study are in clusters at dist 0.045
+
+```
+
+
+### Trends in clusters containing PWID and MSM
+```{r}
+PWIDandMSMclusts <- Cluster_SHARPandPublished4.5.summary %>% filter(grepl("MSM", TipNames) & grepl("PWID", TipNames)) %>%  #find clusters with either MSM_PWID or both MSM and PWID
+  pull(ClusterNumber)
+
+#Now just extract the PWID seqs from these clusters
+PWID_cluster_withMSM <-cluster_memberships.4.5 %>% filter(Cluster_4.5 %in% PWIDandMSMclusts & grepl("PWID", SequenceName)) %>%
+  pull(SequenceName)
+
+sum(grepl(".Female", PWID_cluster_withMSM))
+sum(grepl(".Male", PWID_cluster_withMSM))
+
+```
+PWID sequences that cluster with MSM sequences were not more likely to be from males than females
+
+
+### PWID representation 1.5 clusters
+```{r}
+Cluster_SHARPandPublished1.5.summary %>% filter(grepl("PWID", risks)) %>% select(sources) %>% table()
+
+```
+
+
+### Extract list of seqs in PWID clusters
+```{r}
+Seqs_in_PWID_clust <- Cluster_SHARPandPublished4.5.summary %>%
+  filter(grepl("PWID", risks)) %T>% #keep only clusters containing PWID 
+  {print(nrow(.))} %>% #120 clusters contain at least 1 PWID seq
+  filter(ClusterNumber != "81A1") %T>% #drop the 43-sequence (41 PWID) cluster from 2010
+  {print(nrow(.))} %>% #119 clusters after dropping large cluster
+  pull(TipNames) %>%
+  str_split("\\[|\\s*,\\s*|\\]") %>%
+  unlist() %>%
+  tibble(value = .) %>% filter(value != "") %>% pull(value)
+length(Seqs_in_PWID_clust) #422 sequences are in clusters that contain at least 1 PWID seq (note: not all of these sequences are PWID seqs)
+
+length(unique(Seqs_in_PWID_clust)) == length(Seqs_in_PWID_clust) #check there's no duplicates - each seqeunce should be in only 1 cluster (must be true)
+
+
+# filter fasta files to just these sequences (note: not all sequences will be in each fasta because the cluster data is combined across subtypes)
+SHARP_and_published_Kenya.A1.fasta.PWID_clust <- SHARP_and_published_Kenya.A1.fasta[names(SHARP_and_published_Kenya.A1.fasta) %in% Seqs_in_PWID_clust]
+length(SHARP_and_published_Kenya.A1.fasta.PWID_clust) #316 seqs
+write.fasta(SHARP_and_published_Kenya.A1.fasta.PWID_clust,
+            names(SHARP_and_published_Kenya.A1.fasta.PWID_clust),
+            "../HIV/GeneiousandIQtree/SHARP_and_published/A1/hiv_SHARP_and_published_A1_annotated_names.PWID_clust.fasta")
+
+SHARP_and_published_Kenya.C.fasta.PWID_clust <- SHARP_and_published_Kenya.C.fasta[names(SHARP_and_published_Kenya.C.fasta) %in% Seqs_in_PWID_clust]
+length(SHARP_and_published_Kenya.C.fasta.PWID_clust) #31
+write.fasta(SHARP_and_published_Kenya.C.fasta.PWID_clust,
+            names(SHARP_and_published_Kenya.C.fasta.PWID_clust),
+            "../HIV/GeneiousandIQtree/SHARP_and_published/C/hiv_SHARP_and_published_C_annotated_names.PWID_clust.fasta")
+
+SHARP_and_published_Kenya.D.fasta.PWID_clust <- SHARP_and_published_Kenya.D.fasta[names(SHARP_and_published_Kenya.D.fasta) %in% Seqs_in_PWID_clust]
+length(SHARP_and_published_Kenya.D.fasta.PWID_clust) #13
+write.fasta(SHARP_and_published_Kenya.D.fasta.PWID_clust,
+            names(SHARP_and_published_Kenya.D.fasta.PWID_clust),
+            "../HIV/GeneiousandIQtree/SHARP_and_published/D/hiv_SHARP_and_published_D_annotated_names.PWID_clust.fasta")
+```
+
+
+## Summarize trends  
+##### Clusters containing > 1 risk group:  
+SHARP and published (1.5): `r sum(Cluster_SHARPandPublished1.5.summary$n_unique_risks > 1) / nrow(Cluster_SHARPandPublished1.5.summary)`  
+SHARP and published  (4.5): `r sum(Cluster_SHARPandPublished4.5.summary$n_unique_risks > 1) / nrow(Cluster_SHARPandPublished4.5.summary)`  
+
+##### Clusters containing > 1 region:  
+SHARP (1.5): `r sum(Cluster_SHARP1.5.summary$n_unique_regions > 1)` / `r nrow(Cluster_SHARP1.5.summary)`  
+SHARP (4.5): `r sum(Cluster_SHARP4.5.summary$n_unique_regions > 1)` / `r nrow(Cluster_SHARP4.5.summary)`  
+SHARP and published (1.5): `r sum(Cluster_SHARPandPublished1.5.summary$unique_region > 1)` / `r nrow(Cluster_SHARPandPublished1.5.summary)`  
+SHARP and published  (4.5): `r sum(Cluster_SHARPandPublished4.5.summary$unique_region > 1)` / `r nrow(Cluster_SHARPandPublished4.5.summary)`  
+
+### Table 2
+```{r}
+get_table2 <- function(summary_table, trait, CoastNairobi_only = FALSE){
+  if(CoastNairobi_only == TRUE){
+    summary_table <- summary_table %>% filter(grepl("Coast|Nairobi", regions)) #Only include clusters with at least 1 coast or Nairobi sequence
+  }
+  
+  table2 <- summary_table %>% 
+    group_by(ClusterSize, !!sym(trait)) %>%
+    dplyr::summarize(n = n()) %>%
+    pivot_wider(names_from = "ClusterSize", values_from = "n", values_fill = 0) %>%
+    ungroup()  %>%
+    mutate(total = rowSums(select(., -c(!!sym(trait))), na.rm = TRUE)) %>%
+    #split(.$year_group) %>%  # Use curly braces to combine `if` and `split`
+    #lapply(function(x) select(x, -year_group)) 
+  
+  return(table2)
+}
+
+
+## SHARP 1.5 - region
+Cluster_SHARP1.5.table2_region <- get_table2(Cluster_SHARP1.5.summary, trait = "regions")
+write.csv(Cluster_SHARP1.5.table2_region, "../results/regional trends/cluster/Cluster_SHARP1.5.table2_region.csv")
+
+## SHARP 4.5 - region
+Cluster_SHARP4.5.table2_region <- get_table2(Cluster_SHARP4.5.summary, trait = "regions")
+write.csv(Cluster_SHARP4.5.table2_region, "../results/regional trends/cluster/Cluster_SHARP4.5.table2_region.csv")
+
+
+# SHARP and published 1.5 - region
+Cluster_SHARPandPublished1.5.table2_region <- get_table2(Cluster_SHARPandPublished1.5.summary, trait = "regions")
+write.csv(Cluster_SHARPandPublished1.5.table2_region, "../results/regional trends/cluster/Cluster_SHARPandPublished1.5.table2_region.csv")
+
+# SHARP and published 4.5 - region
+Cluster_SHARPandPublished4.5.table2_region <- get_table2(Cluster_SHARPandPublished4.5.summary, trait = "regions")
+write.csv(Cluster_SHARPandPublished4.5.table2_region, "../results/regional trends/cluster/Cluster_SHARPandPublished4.5.table2_region.csv")
+
+
+# SHARP and published 1.5 - risk
+Cluster_SHARPandPublished1.5.table2_risk <- get_table2(Cluster_SHARPandPublished1.5.summary, trait = "risks")
+write.csv(Cluster_SHARPandPublished1.5.table2_risk, "../results/regional trends/cluster/Cluster_SHARPandPublished1.5.table2_risk.csv")
+
+# SHARP and published 1.5 - risk  (Coast and Nairobi only)
+Cluster_SHARPandPublished1.5.table2_risk.CN <- get_table2(Cluster_SHARPandPublished1.5.summary, trait = "risks",
+                                                       CoastNairobi_only = TRUE)
+write.csv(Cluster_SHARPandPublished1.5.table2_risk.CN, "../results/regional trends/cluster/Cluster_SHARPandPublished1.5.table2_risk.CN.csv")
+
+#Number of clusters with >=2 PWID seqs in them
+Cluster_SHARPandPublished1.5.summary %>%
+  filter(grepl("Coast|Nairobi", regions) & N_PWID+N_MSM_PWID+N_FSW_PWID >= 2) %>% nrow() #12
+
+
+# SHARP and published 4.5 - risk
+Cluster_SHARPandPublished4.5.table2_risk <- get_table2(Cluster_SHARPandPublished4.5.summary, trait = "risks")
+write.csv(Cluster_SHARPandPublished4.5.table2_risk, "../results/regional trends/cluster/Cluster_SHARPandPublished4.5.table2_risk.csv")
+
+# SHARP and published 4.5 - risk (Coast and Nairobi only)
+Cluster_SHARPandPublished4.5.table2_risk.CN <- get_table2(Cluster_SHARPandPublished4.5.summary, trait = "risks", CoastNairobi_only = TRUE)
+write.csv(Cluster_SHARPandPublished4.5.table2_risk.CN, "../results/regional trends/cluster/Cluster_SHARPandPublished4.5.table2_risk.CN.csv")
+
+# Simplified table for SHARP and published 4.5 - risk (Coast and Nairobi only, focused on PWID clusters)
+Cluster_SHARPandPublished4.5.table2_risk.CN2 <- get_table2(Cluster_SHARPandPublished4.5.summary, trait = "risks", CoastNairobi_only = TRUE)
+
+Cluster_SHARPandPublished4.5.table2_risk.CN2 <- Cluster_SHARPandPublished4.5.table2_risk.CN2 %>%
+  mutate(network = network + large_cluster,
+         cluster_type = ifelse(grepl("PWID", risks), risks, "non_PWID")) %>%
+  group_by(cluster_type) %>%
+  dplyr::summarize(dyad = sum(dyad), network = sum(network))
+Cluster_SHARPandPublished4.5.table2_risk.CN2
+write.csv(Cluster_SHARPandPublished4.5.table2_risk.CN2 , "../results/regional trends/cluster/Cluster_SHARPandPublished4.5.table2_risk_CoastNairobi_only2.csv")
+
+#Number of clusters with >=2 PWID seqs in them
+Cluster_SHARPandPublished4.5.summary %>%
+  filter(grepl("Coast|Nairobi", regions) & N_PWID+N_MSM_PWID+N_FSW_PWID >= 2) %>% nrow() #25
+
+
+# Clustering for PWID who share needles
+#I'm doing this manually because it's a small number
+share_needles_Seqnames <- meta_data %>% 
+  filter(source == "SHARP" & shareneedles == "Yes") %>% pull(annotated_name) #Seq names for SHARP participants who shared needles
+Cluster_SHARPandPublished4.5.summary %>%
+   filter(rowSums(sapply(share_needles_Seqnames, grepl, x = TipNames)) > 0) %>% View() #Pull the clusters that contain a sequence from a PWID who shared needles
+
+
+
+
+
+
+# Total number of clusters containing a seq from each key pop: 4.5 threshold...
+##FSW
+Cluster_SHARPandPublished4.5.summary %>%
+  filter(grepl("Coast|Nairobi", regions) & grepl("FSW", risks) & !grepl("FSW_PWID", risks)) %>% nrow() #82
+##HET
+Cluster_SHARPandPublished4.5.summary %>%
+  filter(grepl("Coast|Nairobi", regions) & grepl("HET", risks)) %>% nrow() #599
+##PWID
+Cluster_SHARPandPublished4.5.summary %>%
+  filter(grepl("Coast|Nairobi", regions) & grepl("PWID", risks)) %>% nrow() #120 (110 if only counting SHARP seqs)
+##MSM
+Cluster_SHARPandPublished4.5.summary %>%
+  filter(grepl("Coast|Nairobi", regions) & grepl("MSM", risks)) %>% nrow() #115
+
+#PWID who shared needles
+Cluster_SHARPandPublished4.5.summary
+
+
+
+# Total number of clusters containing a seq from each key pop: 1.5 threshold...
+##FSW
+Cluster_SHARPandPublished1.5.summary %>%
+  filter(grepl("Coast|Nairobi", regions) & grepl("FSW", risks) & !grepl("FSW_PWID", risks)) %>% nrow() #23
+##HET
+Cluster_SHARPandPublished1.5.summary %>%
+  filter(grepl("Coast|Nairobi", regions) & grepl("HET", risks)) %>% nrow() #163
+##PWID
+Cluster_SHARPandPublished1.5.summary %>%
+  filter(grepl("Coast|Nairobi", regions) & grepl("PWID", risks)) %>% nrow() #15
+##MSM
+Cluster_SHARPandPublished1.5.summary %>%
+  filter(grepl("Coast|Nairobi", regions) & grepl("MSM", risks)) %>% nrow() #66
+```
+
+
+
+
+
+### Sex distribution among PWID shared clusters
+```{r}
+# Get clusters of only sequences from PWID (theshold 4.5)
+PWIDExclusiveClusters4.5 <- Cluster_SHARPandPublished4.5.summary %>% filter(risks == "PWID" |
+                                                 (grepl("^(.*PWID){2}.*$", risks) & n_unique_risks == 2) |
+                                                 (grepl("^(.*PWID){3}.*$", risks) & n_unique_risks == 3) ) %>% #PWID specific clusters (the complicated filtering is because we classified some PWID as FSW_PWID and some as MSM_PWID. This will find any combination of those with no non PWID groups)
+pull(ClusterNumber)
+
+#Now just extract the PWID seqs from these clusters
+cluster_memberships.4.5 %>% filter(Cluster_4.5 %in% PWIDExclusiveClusters4.5) %>% arrange(Cluster_4.5)
+  
+
+
+# Get clusters of only sequences from PWID (theshold 1.5)
+PWIDExclusiveClusters1.5 <- Cluster_SHARPandPublished1.5.summary %>% filter(risks == "PWID" |
+                                                 (grepl("^(.*PWID){2}.*$", risks) & n_unique_risks == 2) |
+                                                 (grepl("^(.*PWID){3}.*$", risks) & n_unique_risks == 3) ) %>% #PWID specific clusters (the complicated filtering is because we classified some PWID as FSW_PWID and some as MSM_PWID. This will find any combination of those with no non PWID groups)
+pull(ClusterNumber)
+
+#Now just extract the PWID seqs from these clusters
+#cluster_memberships.1.5 %>% filter(Cluster_1.5 %in% PWIDExclusiveClusters1.5) %>% arrange(Cluster_1.5) %>%
+#  mutate(TipNames == gsub("\\[\\]", "", TipNames)) %>%
+#  pull(TipNames) 
+
+
+# Get clusters of at least 2 sequences from PWID
+PWID2orMore4.5 <- Cluster_SHARPandPublished4.5.summary %>% filter(grepl("PWID", TipNames) & N_PWID + N_FSW_PWID + N_MSM_PWID >= 2) %>% #find clusters with either MSM_PWID or both MSM and PWID
+  pull(ClusterNumber)
+
+#Now just extract the PWID seqs from these clusters
+cluster_memberships.4.5 %>% filter(Cluster_4.5 %in% PWID2orMore4.5 & grepl("PWID", SequenceName)) %>%
+  mutate(sex = case_when(
+      grepl("Female", SequenceName) ~ "Female",
+      grepl("Male", SequenceName) ~ "Male",
+      TRUE ~ as.character(NA)
+    )) %>%
+  group_by(Cluster_4.5) %>% summarize(sexes = toString(unique(sex))) %>%
+  select(sexes) %>% table(useNA="ifany")
+
+
+
+# Get clusters containing a PWID sequence and non_PWID sequence
+PWIDandOtherPop4.5 <- Cluster_SHARPandPublished4.5.summary %>% filter(grepl("PWID|FSW_PWID|MSM_PWID", TipNames) & grepl("\\.MSM\\.|\\.FSW\\.|\\.HET\\.", TipNames)) %>% #find clusters with at least 1 PWID and at least 1 non-PWID
+  pull(ClusterNumber)
+
+#Now just extract the PWID seqs from these clusters
+cluster_memberships.4.5 %>% filter(Cluster_4.5 %in% PWIDandOtherPop4.5 & grepl("PWID", SequenceName)) %>%
+  mutate(sex = case_when(
+      grepl("Female", SequenceName) ~ "Female",
+      grepl("Male", SequenceName) ~ "Male",
+      TRUE ~ as.character(NA)
+    )) %>%
+  select(sex) %>% table(useNA = "ifany")
+
+
+```
+
+
+Of 11 (threshold 4.5) clusters containing sequences only from PWID, 5 contained sequences from males and females, 4 contain sequences from males only, and 2 contain sequences from females only.  
+Of the 12 (threshold 1.5) clusters containing sequences only from PWID, 6 contained sequences from males and females, 1 contain sequences from males only, 3 contain sequences from females only, and 2 were missing data.  
+Of 25 (threshold 4.5) clusters containing sequences from multiple PWID, 12 contained sequences from males and females, 5 contain sequences from males only 5 contain sequences from females only, and 3 were missing data  
+
+
+Of 109 PWID sequences in clusters with at least 1 non-PWID population, 61 are women and 50 are men
+
+
+
+### CROI sex-distribution table (by seqeunce counts)
+```{r}
+
+# By seqeunce
+
+# How many non-recombinant PWID seqs by sex?
+PWID_seqs %>%
+  mutate(sex = sapply(strsplit(SequenceName, "\\."), function(x) x[5])) %>%
+  group_by(sex) %>%
+  summarize(count = n())
+
+# How many PWID sequences are in clusters by sex?
+SHARP_PWIDs_inClust %>%
+  mutate(sex = sapply(strsplit(SequenceName, "\\."), function(x) x[5])) %>%
+  group_by(sex) %>%
+  summarize(count = n())
+
+
+## By cluster
+
+#Clusters containing a sequence from a SHARP PWID - note: the paper includes counts from all PWID (not omly SHARP)
+SHARP_PWID_clusters <- cluster_memberships.4.5 %>% 
+  filter(grepl("PWID", SequenceName) & grepl("SP", SequenceName)) %>%
+  pull(Cluster_4.5) %>% unique() %>% na.omit()
+
+#Clusters containing a sequence from a Female SHARP PWID
+F_PWID_clusters <- cluster_memberships.4.5 %>% 
+  filter(grepl("Female", SequenceName) & grepl("PWID", SequenceName) & grepl("SP", SequenceName)) %>% #SP selects for only SHARP sequences
+  pull(Cluster_4.5) %>% unique() %>% na.omit()
+
+#Clusters containing a sequence from a Male SHARP PWID
+M_PWID_clusters <- cluster_memberships.4.5 %>% 
+  filter(grepl("Male", SequenceName) & grepl("PWID", SequenceName) & grepl("SP", SequenceName)) %>%
+  pull(Cluster_4.5) %>% unique() %>% na.omit()
+                      
+# Summary of clustering with other populations
+
+#All
+Cluster_SHARPandPublished4.5.summary %>%
+  filter(ClusterNumber %in% SHARP_PWID_clusters) %>%
+  get_table2("risks") %>% print() 
+
+#Female PWID
+Cluster_SHARPandPublished4.5.summary %>%
+  filter(ClusterNumber %in% F_PWID_clusters) %>%
+  get_table2("risks") %>% print()
+
+Cluster_SHARPandPublished4.5.summary %>%
+  filter(ClusterNumber %in% M_PWID_clusters) %>%
+  get_table2("risks") %>% print()
+
+
+
+
+
+
+# Get clusters of at least 2 sequences from SHARP PWID (this differs from above, where I looked at all PWID seqs)
+SHARP_PWID2orMore4.5 <- Cluster_SHARPandPublished4.5.summary %>% filter(ClusterNumber %in% SHARP_PWID_clusters & N_PWID + N_FSW_PWID + N_MSM_PWID >= 2) %>% #find clusters with either MSM_PWID or both MSM and PWID
+  pull(ClusterNumber)
+
+#Now just extract the PWID seqs from these clusters
+cluster_memberships.4.5 %>% filter(Cluster_4.5 %in% SHARP_PWID2orMore4.5 & grepl("PWID", SequenceName)) %>%
+  mutate(sex = case_when(
+      grepl("Female", SequenceName) ~ "Female",
+      grepl("Male", SequenceName) ~ "Male",
+      TRUE ~ as.character(NA)
+    )) %>%
+  group_by(Cluster_4.5) %>% summarize(sexes = toString(unique(sex))) %>%
+  select(sexes) %>% table(useNA="ifany")
+```
+
+
+
+
+### Visualize by cluster
+```{r}
+
+# SHARP- region (4.5)
+
+Cluster_SHARP4.5.long <- Cluster_SHARP4.5.summary   %>% 
+  select(ClusterNumber, P_Coast, P_Nairobi) %>% 
+  arrange(P_Coast, P_Nairobi) %>%
+  mutate(ClusterNumber = factor(ClusterNumber, levels = unique(ClusterNumber))) %>%
+  pivot_longer(cols = starts_with("P_"), names_to = "region_type", values_to = "region_percentage")
+
+# Create bar plot
+Cluster_SHARP4.5.plot <- ggplot(Cluster_SHARP4.5.long,
+      aes(x = ClusterNumber, y = region_percentage, fill = region_type)) +
+  geom_bar(stat = "identity", cex=0.01) +
+  labs(x = "Cluster (max dist <0.045)", y = "Percentage", fill = "Region") +
+  scale_fill_discrete(labels = c("Coast", "Nairobi")) + #Caution! new labels must match order of default labels
+  scale_x_discrete(drop = FALSE, breaks = NULL) +
+  scale_y_discrete(expand = c(0,0)) +
+  theme(axis.text.x=element_blank(), 
+      axis.ticks.x=element_blank()) +
+  theme(text=element_text(size=21))
+Cluster_SHARP4.5.plot 
+ggsave( "../results/regional trends/cluster/Cluster_SHARP_region.png", Cluster_SHARP4.5.plot)
+
+
+# SHARP and Published - region (4.5)
+
+Cluster_SHARPandPublished4.5.long <- Cluster_SHARPandPublished4.5.summary   %>% 
+  mutate(anyPWID = ifelse(grepl("PWID", risks), "Yes", "No")) %>%
+  select(ClusterNumber, P_Central, P_Coast, P_Nairobi, P_Nyanza, P_Rvalley, P_Western, anyPWID) %>% 
+  #Order for pleasant-looking graph (modeled after ancestry plots)
+  arrange(
+    desc(P_Western),
+    desc(P_Western) + desc(P_Nyanza),
+    desc(P_Western) + desc(P_Nyanza) + desc(P_Rvalley),
+    desc(P_Western) + desc(P_Nyanza) + desc(P_Rvalley) + desc(P_Central),
+    desc(P_Western) + desc(P_Nyanza) + desc(P_Rvalley) + desc(P_Central) + desc(P_Nairobi),
+    desc(P_Western) + desc(P_Nyanza) + desc(P_Rvalley) + desc(P_Central) + desc(P_Nairobi) + desc(P_Coast),
+    
+    desc(P_Nyanza),
+    desc(P_Nyanza) + desc(P_Rvalley),
+    desc(P_Nyanza) + desc(P_Rvalley) + desc(P_Central),
+    desc(P_Nyanza) + desc(P_Rvalley) + desc(P_Central) + desc(P_Nairobi),
+    desc(P_Nyanza) + desc(P_Rvalley) + desc(P_Central) + desc(P_Nairobi) + desc(P_Coast),
+    
+    desc(P_Rvalley),
+    desc(P_Rvalley) + desc(P_Central),
+    desc(P_Rvalley) + desc(P_Central) + desc(P_Nairobi),
+    desc(P_Rvalley) + desc(P_Central) + desc(P_Nairobi) + desc(P_Coast),
+    
+    desc(P_Central),
+    desc(P_Central) + desc(P_Nairobi),
+    desc(P_Central) + desc(P_Nairobi) + desc(P_Coast),
+ 
+    desc(P_Nairobi),
+    desc(P_Nairobi) + desc(P_Coast),
+    
+    desc(P_Coast)
+    ) %>%
+  mutate(ClusterNumber = factor(ClusterNumber, levels = unique(ClusterNumber))) %>%
+  pivot_longer(cols = starts_with("P_"), names_to = "region_type", values_to = "region_percentage") %>%
+  mutate(region_type = factor(region_type, levels = c("P_Western", "P_Nyanza",  "P_Rvalley", "P_Central",  "P_Nairobi", "P_Coast")))
+N_bars1 <- length(unique(Cluster_SHARPandPublished4.5.long$ClusterNumber))
+
+#Create bar plot
+Cluster_SHARPandPublished4.5_region.plot <- ggplot(Cluster_SHARPandPublished4.5.long,
+    aes(x = factor(ClusterNumber), y = region_percentage, fill = region_type, alpha = anyPWID)) +
+  geom_bar(stat = "identity") +
+  labs(x = paste0("Cluster (max dist <0.045)  N = ", N_bars1),
+       y = "Percentage", fill = "Region") + 
+  scale_fill_discrete(labels = c("Western", "Nyanza",  "Rift valley", "Central",  "Nairobi", "Coast")) +
+  scale_x_discrete(drop = FALSE, breaks = NULL) +
+  scale_y_discrete(expand = c(0,0)) +
+  theme(axis.text.x=element_blank(), 
+      axis.ticks.x=element_blank()) +
+  theme(text=element_text(size=21)) +
+  scale_alpha_manual(values = c("No" = 0.3, "Yes" = 1), breaks = NULL)
+Cluster_SHARPandPublished4.5_region.plot
+ggsave( "../results/regional trends/cluster/Cluster_SHARPandPublished4.5_region.png", Cluster_SHARPandPublished4.5_region.plot, width = 11, height = 2.5, units = "in")
+
+
+
+
+# SHARP and Published - region (4.5) - only PWID-containing clusters
+
+Cluster_SHARPandPublished4.5.long_PWID <- Cluster_SHARPandPublished4.5.long %>%
+  filter(anyPWID == "Yes")
+N_bars2 <- length(unique(Cluster_SHARPandPublished4.5.long_PWID$ClusterNumber))
+
+#Create bar plot
+Cluster_SHARPandPublished4.5_PWID.plot <- ggplot(Cluster_SHARPandPublished4.5.long_PWID ,
+    aes(x = factor(ClusterNumber), y = region_percentage, fill = region_type)) +
+  geom_bar(stat = "identity") +
+  labs(x = paste0("Cluster (max dist <0.045)  N = ", N_bars2),
+                  y = "Percentage", fill = "Region") + 
+  scale_fill_discrete(labels = c("Western", "Nyanza",  "Rift valley", "Central",  "Nairobi", "Coast")) +
+  scale_x_discrete(drop = FALSE, breaks = NULL) +
+  scale_y_discrete(expand = c(0,0)) +
+  theme(axis.text.x=element_blank(), 
+      axis.ticks.x=element_blank()) +
+  theme(text=element_text(size=21))
+Cluster_SHARPandPublished4.5_PWID.plot
+ggsave( "../results/regional trends/cluster/Cluster_SHARPandPublished4.5_region_PWIDonly.png", Cluster_SHARPandPublished4.5_PWID.plot, width = 10, height =2.5, units = "in")
+
+
+
+
+# SHARP and Published - risk (1.5)
+
+Cluster_SHARPandPublished1.5.long <- Cluster_SHARPandPublished1.5.summary %>%
+  mutate(P_FSW = P_FSW + P_FSW_PWID, P_MSM = P_MSM + P_MSM_PWID) %>% 
+  select(ClusterNumber, P_FSW, P_HET, P_MSM, P_PWID) %>% 
+  arrange(
+    desc(P_PWID), desc(P_PWID + P_FSW), desc(P_PWID + P_FSW + P_MSM),
+    desc(P_FSW), desc(P_FSW + P_MSM), 
+    desc(P_MSM)) %>%
+  mutate(ClusterNumber = factor(ClusterNumber, levels = unique(ClusterNumber))) %>%
+  pivot_longer(cols = starts_with("P_"), names_to = "risk_type", values_to = "risk_percentage") %>%
+  mutate(risk_type = factor(risk_type, levels = c("P_PWID", "P_FSW", "P_MSM", "P_HET")))
+N_bars3 <- length(unique(Cluster_SHARPandPublished1.5.long$ClusterNumber))
+
+#Create bar plot
+Cluster_SHARPandPublished1.5_risk.plot <- ggplot(Cluster_SHARPandPublished1.5.long, aes(x = ClusterNumber, y = risk_percentage, fill = risk_type)) +
+  geom_bar(stat = "identity") +
+  labs(x = paste0("Cluster (max dist <0.015)  N = ", N_bars3), y = "Percentage", fill = "Population") +
+  scale_fill_manual(values = c("P_PWID" = "#C77CFF", "P_FSW" = "#F8766D", "P_MSM" = "#00BFC4", "P_HET" = "#7CAE00"),
+                    labels = c("PWID", "FSW", "MSM", "GP")) +
+  scale_x_discrete(drop = FALSE, breaks = NULL) +
+  scale_y_discrete(expand = c(0,0)) +
+  theme(axis.text.x=element_blank(), 
+      axis.ticks.x=element_blank()) +
+  theme(text=element_text(size=21))
+Cluster_SHARPandPublished1.5_risk.plot
+ggsave( "../results/regional trends/cluster/Cluster_SHARPandPublished1.5_risk.png", Cluster_SHARPandPublished1.5_risk.plot, width = 10, height =2.5, units = "in")
+
+
+
+# SHARP and Published - risk (4.5)
+
+Cluster_SHARPandPublished4.5.long <- Cluster_SHARPandPublished4.5.summary %>%
+  mutate(P_FSW = P_FSW + P_FSW_PWID, P_MSM = P_MSM + P_MSM_PWID) %>% 
+  select(ClusterNumber, P_FSW, P_HET, P_MSM, P_PWID) %>% 
+  arrange(
+    desc(P_PWID), desc(P_PWID + P_FSW), desc(P_PWID + P_FSW + P_MSM),
+    desc(P_FSW), desc(P_FSW + P_MSM), 
+    desc(P_MSM)) %>%
+  mutate(ClusterNumber = factor(ClusterNumber, levels = unique(ClusterNumber))) %>%
+  pivot_longer(cols = starts_with("P_"), names_to = "risk_type", values_to = "risk_percentage") %>%
+  mutate(risk_type = factor(risk_type, levels = c("P_PWID", "P_FSW", "P_MSM", "P_HET")))
+N_bars4 <- length(unique(Cluster_SHARPandPublished4.5.long$ClusterNumber))
+
+#Create bar plot
+Cluster_SHARPandPublished4.5_risk.plot <- ggplot(Cluster_SHARPandPublished4.5.long, aes(x = ClusterNumber, y = risk_percentage, fill = risk_type)) +
+  geom_bar(stat = "identity") +
+  labs(x = paste0("Cluster (max dist <0.045)  N = ", N_bars4), y = "Percentage", fill = "Population") +
+  scale_fill_manual(values = c("P_PWID" = "#C77CFF", "P_FSW" = "#F8766D", "P_MSM" = "#00BFC4", "P_HET" = "#7CAE00"),
+                    labels = c("PWID", "FSW", "MSM", "GP")) +  scale_x_discrete(drop = FALSE, breaks = NULL) +
+  scale_y_discrete(expand = c(0,0)) +
+  theme(axis.text.x=element_blank(), 
+      axis.ticks.x=element_blank()) +
+  theme(text=element_text(size=21))
+Cluster_SHARPandPublished4.5_risk.plot
+ggsave( "../results/regional trends/cluster/Cluster_SHARPandPublished4.5_risk.png", Cluster_SHARPandPublished4.5_risk.plot, width = 10, height =2.5, units = "in")
+
+# Save a combined_plot
+cluster_comb.plot <- ggarrange(Cluster_SHARPandPublished1.5_risk.plot, Cluster_SHARPandPublished4.5_risk.plot, Cluster_SHARPandPublished4.5_region.plot, Cluster_SHARPandPublished4.5_PWID.plot, ncol = 1)
+
+ggsave( "../results/regional trends/cluster/Cluster_SHARPandPublished4.5_comb.png", cluster_comb.plot, width = 8, height =10, units = "in")
+
+```
+
+
+### Cluster density histrograms
+```{r}
+
+# Count by total cluster sizes
+
+get_group_cluster_sizes <- function(cluster_summary.df, group_name,
+                                    simplify_groups = TRUE, total_or_group_count = "total"){
+  
+  if(simplify_groups == TRUE){
+    cluster_summary.df <- cluster_summary.df %>%
+      #Make some edits to the sumamry dataframe because I changed how I'm classifying "FSW_PWID" and "MSM_PWID"
+      mutate(risks = gsub("MSM_PWID", "MSM", risks),
+             N_PWID = N_PWID + N_FSW_PWID,
+             N_MSM = N_MSM + N_MSM_PWID) %>%
+      select(-c(N_FSW_PWID, N_MSM_PWID))
+  }
+  
+  cluster_summary.filt <- cluster_summary.df %>% filter(grepl(group_name, risks))
+    
+  if(total_or_group_count == "total"){
+    group_clust_sizes <- cluster_summary.filt %>%
+      select(n_tips) %>%
+      mutate(risk_type = group_name)
+  }
+
+  if(total_or_group_count == "group"){
+    clust_size_column <- paste0("N_", group_name)
+    group_clust_sizes <- cluster_summary.filt %>%
+      select(!!sym(clust_size_column)) %>%
+      mutate(risk_type = group_name)
+  }
+  
+  return(group_clust_sizes)
+}
+
+
+head(sort(Cluster_SHARPandPublished4.5.summary$n_tips, decreasing = TRUE)) #Look at distribtuion of clsuter sizes
+breaks = seq(0, 45, 5)
+
+
+HET_Clust <- get_group_cluster_sizes(Cluster_SHARPandPublished4.5.summary, "HET")
+MSM_Clust <- get_group_cluster_sizes(Cluster_SHARPandPublished4.5.summary, "MSM")
+FSW_Clust <- get_group_cluster_sizes(Cluster_SHARPandPublished4.5.summary, "FSW")
+PWID_Clust <- get_group_cluster_sizes(Cluster_SHARPandPublished4.5.summary, "PWID")
+
+Cluster_SHARPandPublished4.5.long2 <- rbind(HET_Clust, MSM_Clust) %>% rbind(FSW_Clust) %>% rbind(PWID_Clust)
+
+
+Cluster_SHARPandPublished4.5_barplot_by_risk_total_clust_sizes.plot <- ggplot(Cluster_SHARPandPublished4.5.long2, aes(x = n_tips, fill = risk_type, color = risk_type)) +
+  geom_histogram(position = "identity", binwidth = 1, alpha =0.5, size = 0.2) +
+  labs(x = "Cluster Size") +
+  scale_x_continuous(limits = c(-1, 45), breaks = breaks,
+                     minor_breaks = NULL,  expand = c(0, 0)) +
+  scale_y_continuous(limits = c(0, 400)) + 
+  facet_wrap(~ risk_type, ncol = 2,
+             labeller = labeller(risk_type = c("FSW" = "FSW", "HET" = "GP", "MSM" = "MSM", "PWID" = "PWID"))) +
+  #ggtitle("Cluster sizes (all clusters containing each risk group) -\npatristic distance from ML tree -\nmaximum distance (0.045)")
+ geom_text(stat = "count", data = subset(Cluster_SHARPandPublished4.5.long2, n_tips > 10),
+            aes(label = ..count..), size = 5, vjust = -1, position = position_nudge(y = rep(c(25,0), 10)), show.legend = FALSE) +
+  theme(plot.margin = unit(c(1,0.5,0,0), "inches")) +
+  scale_fill_discrete(labels = c("FSW", "GP", "MSM", "PWID"), name = "Population") +
+  scale_color_discrete(labels = c("FSW", "GP", "MSM", "PWID"), name = "Population")  +
+  theme(text = element_text(size = 32),
+        axis.text.y=element_text(size=18), axis.text.x=element_text(size=20))
+
+Cluster_SHARPandPublished4.5_barplot_by_risk_total_clust_sizes.plot
+
+ggsave("../results/regional trends/cluster/clust4.5_risk_hist_total_clust_sizes.png", Cluster_SHARPandPublished4.5_barplot_by_risk_total_clust_sizes.plot, width = 8, height =3, units = "in")
+
+
+
+
+# Count by number of each group in each cluster
+
+Cluster_SHARPandPublished4.5.long3 <- Cluster_SHARPandPublished4.5.summary %>%
+  mutate(N_FSW = N_FSW + N_FSW_PWID, N_MSM = N_MSM + N_MSM_PWID) %>% 
+  select(N_FSW, N_HET, N_MSM, N_PWID) %>% 
+  pivot_longer(cols = starts_with("N_"), names_to = "risk_type", values_to = "n_tips") %>%
+  filter(n_tips != 0)
+
+#Combined
+Cluster_SHARPandPublished4.5_barplot_by_risk.plot <- ggplot(Cluster_SHARPandPublished4.5.long3, aes(x = n_tips, fill = risk_type, color = risk_type, alpha = risk_type)) +
+  geom_histogram(position = "identity", binwidth = 1, size = 0.2) +
+  labs(x = "Cluster Size") +
+  scale_x_continuous(limits = c(-1, 43), breaks = breaks,
+                     minor_breaks = NULL, expand = c(0, 0)) +
+  scale_y_continuous(limits = c(0, 400)) + 
+  scale_alpha_manual(values = c(0.5, 0.1, 0.3, 0.2), guide = "none") # Specify alpha values for risk_type categories
+Cluster_SHARPandPublished4.5_barplot_by_risk.plot
+
+ggsave("../results/regional trends/cluster/clust4.5_risk_hist_riskclust_sizes.png", Cluster_SHARPandPublished4.5_barplot_by_risk.plot, width = 8, height =3, units = "in")
+
+
+#faceted
+Cluster_SHARPandPublished4.5_barplot_by_risk.plot2 <- ggplot(Cluster_SHARPandPublished4.5.long3, aes(x = n_tips, fill = risk_type, color = risk_type)) +
+  geom_histogram(position = "identity", binwidth = 1, alpha =0.5, size = 0.2) +
+  labs(x = "N Seqs from Population in Cluster") +
+  scale_x_continuous(limits = c(-1, 45), breaks = breaks,
+                     minor_breaks = NULL, expand = c(0, 0)) +
+  scale_y_continuous(limits = c(0, 400)) + 
+  facet_wrap(~ risk_type, ncol = 2,
+             labeller = labeller(risk_type = c("N_FSW" = "FSW", "N_HET" = "GP", "N_MSM" = "MSM", "N_PWID" = "PWID"))) +
+  #ggtitle("Number of risk group seqs in cluster -\npatristic distance from ML tree -\nmaximum distance (0.045)") +
+  geom_text(stat = "count", data = subset(Cluster_SHARPandPublished4.5.long3, n_tips > 10),
+            aes(label = ..count..), size = 5, vjust = -1, position = position_nudge(y = rep(c(25,0), 10)), show.legend = FALSE) +
+  theme(plot.margin = unit(c(1,0.5,0,0), "inches")) +
+  scale_fill_discrete(labels = c("FSW", "GP", "MSM", "PWID"), name = "Population") +
+  scale_color_discrete(labels = c("FSW", "GP", "MSM", "PWID"), name = "Population")  +
+  theme(text = element_text(size = 32),
+        axis.text.y=element_text(size=18), axis.text.x=element_text(size=20))
+
+Cluster_SHARPandPublished4.5_barplot_by_risk.plot2
+
+ggsave("../results/regional trends/cluster/clust4.5_risk_hist_riskclust_sizes2.png", Cluster_SHARPandPublished4.5_barplot_by_risk.plot2, width = 8, height =3, units = "in")
+
+
+clust_hist_comb.plot <- ggarrange(
+  Cluster_SHARPandPublished4.5_barplot_by_risk_total_clust_sizes.plot,
+  Cluster_SHARPandPublished4.5_barplot_by_risk.plot2, ncol = 2)
+
+
+
+
+# Print plot of PWID clusters by itself
+Cluster_SHARPandPublished4.5.long3.PWIDonly <- Cluster_SHARPandPublished4.5.long3 %>% filter(risk_type == "PWID")
+Cluster_SHARPandPublished4.5_PWIDonly.plot <- ggplot(Cluster_SHARPandPublished4.5.long3.PWIDonly, aes(x = n_tips)) +
+  geom_histogram(position = "identity", binwidth = 1, size = 0.2, fill = "#C77CFF") +
+  labs(x = "cluster size") +
+  scale_x_continuous(limits = c(-1, 45), breaks = breaks,
+                     minor_breaks = NULL,  expand = c(0, 0)) +
+  ggtitle("Number of HIV-1 sequences\nfrom PWID in cluster") +
+  theme(text = element_text(size = 24))
+
+Cluster_SHARPandPublished4.5_PWIDonly.plot
+
+ggsave("../results/regional trends/cluster/PWID_seqs_inClust.png", Cluster_SHARPandPublished4.5_PWIDonly.plot, width = 8, height =6, units = "in")
+
+
+```
+
+TO DO: why are there missing values in plots?  
+
+
+
+# ALTERNATIVE: TN93-BASED CLUSTERS (FROM FASTA)
+```{r}
+# read in fasta file
+
+# SHARP and published
+SHARP_and_published_Kenya.fasta <- read.FASTA("../HIV/GeneiousandIQtree/SHARP_and_published/all_subtypes/hiv_4065_SHARP_and_published_V4.fasta") #actually 4080 seqs because includes refs from UG and TZ
+SHARP_and_published_Kenya.fasta <- SHARP_and_published_Kenya.fasta[!(grepl("D\\.UG|D\\.TZ", names(SHARP_and_published_Kenya.fasta)))] #Drop UG and TZ ref seqs
+#Fix names to match
+names(SHARP_and_published_Kenya.fasta) <- gsub("\\|.*", "", names(SHARP_and_published_Kenya.fasta)) #drop appendices from SHARP seq names
+names(SHARP_and_published_Kenya.fasta) <- gsub("_.*", "", names(SHARP_and_published_Kenya.fasta))
+any(!(names(SHARP_and_published_Kenya.fasta) %in% meta_data$tree_seq_name)) #shoudl be false
+names(SHARP_and_published_Kenya.fasta) <- meta_data$annotated_name[match(names(SHARP_and_published_Kenya.fasta), meta_data$tree_seq_name)]
+
+
+
+
+# Get TN93 distance matrix
+SHARP_and_published_Kenya.dist <- dist.dna(SHARP_and_published_Kenya.fasta, model = "TN93", as.matrix = TRUE, pairwise.deletion = TRUE)
+diag(SHARP_and_published_Kenya.dist) <- NA #Make diagonol (ie. self-comparison) NA to avoid accidentally counting as 0 distances
+
+
+
+# Find clusters
+cluster_by_distance.complete_linkage  <- function(dist_matrix, threshold = 0.045, summarize_by = "cluster", metadata = NULL){
+  hc <- hclust(as.dist(dist_matrix), method = "complete")
+  clusters <- cutree(hc, h = threshold)
+  Clusters <- tibble(SequenceName = names(clusters), cluster = as.integer(clusters)) %>%
+    group_by(cluster) %>% filter(n() > 1) %>% ungroup()
+  
+  if(summarize_by == "cluster"){
+    clusters_summary <- Clusters %>% group_by(cluster) %>%
+      summarize(SequenceNames = paste0(SequenceName, collapse = " ; "), cluster_size = n()) %>%
+      filter(cluster_size > 1) %>%
+      arrange(desc(cluster_size))
+      if(any(duplicated(unlist(str_split(clusters_summary$ptids, pattern = " ; "))))){
+        warning("Some ptids fall into multiple clusters")
+      }
+    
+      return(clusters_summary)
+
+    
+  } else if(summarize_by == "sequence" & !is.null(metadata)){
+    clusters_data <- meta_data %>%
+      select(annotated_name, source, sampling_year, risk, risk2.F, risk3.F, risk4.F, region, region.CN, region2.F, sex, shareneedles) %>%
+      right_join(Clusters, by = c("annotated_name" = "SequenceName"))
+    
+    return(clusters_data)
+ 
+       
+  } else {
+    return(Clusters)
+  }
+  
+
+}
+
+SHARP_and_published_Kenya.045 <- cluster_by_distance.complete_linkage(dist_matrix = SHARP_and_published_Kenya.dist, summarize_by = "sequence", metadata = meta_data)
+
+SHARP_and_published_Kenya.045.summary <- summarize_by_cluster(SHARP_and_published_Kenya.045, cluster = "cluster")
+#hist(SHARP_and_published_Kenya.045.summary)
+SHARP_and_published_Kenya.045.summary.table2 <- get_table2(SHARP_and_published_Kenya.045.summary, "risks", CoastNairobi_only = TRUE)
+
+
+SHARP_and_published_Kenya.045.PWID.total <- get_group_cluster_sizes(SHARP_and_published_Kenya.045.summary,
+                                                              "PWID", simplify_groups = TRUE,
+                                                              total_or_group_count = "total")
+```
+
+
+
+## Cluster density histograms
+```{r}
+
+breaks = seq(0, 45, 5)
+
+HET_Clust2 <- get_group_cluster_sizes(SHARP_and_published_Kenya.045.summary, "HET",
+                                     simplify_groups = TRUE, total_or_group_count = "total")
+MSM_Clust2 <- get_group_cluster_sizes(SHARP_and_published_Kenya.045.summary, "MSM",
+                                     simplify_groups = TRUE, total_or_group_count = "total")
+FSW_Clust2 <- get_group_cluster_sizes(SHARP_and_published_Kenya.045.summary, "FSW",
+                                     simplify_groups = TRUE, total_or_group_count = "total")
+PWID_Clust2 <- get_group_cluster_sizes(SHARP_and_published_Kenya.045.summary, "PWID",
+                                     simplify_groups = TRUE, total_or_group_count = "total")
+
+Cluster_SHARPandPublished4.5.long2 <- rbind(HET_Clust2, MSM_Clust2) %>% rbind(FSW_Clust2) %>% rbind(PWID_Clust2)
+
+
+Cluster_SHARPandPublished4.5_barplot_by_risk_total_clust_sizes.plot2 <- ggplot(Cluster_SHARPandPublished4.5.long2, aes(x = n_tips, fill = risk_type, color = risk_type)) +
+  geom_histogram(position = "identity", binwidth = 1, alpha =0.5, size = 0.2) +
+  labs(x = "Cluster Size") +
+  scale_x_continuous(limits = c(-1, 45), breaks = breaks,
+                     minor_breaks = NULL,  expand = c(0, 0)) +
+  scale_y_continuous(limits = c(0, 400)) + 
+  facet_wrap(~ risk_type, ncol = 2,
+             labeller = labeller(risk_type = c("FSW" = "FSW", "HET" = "GP", "MSM" = "MSM", "PWID" = "PWID"))) +
+  #ggtitle("Cluster sizes (all clusters containing each risk group) -\nTN93- maximum distance (0.045)") +
+  geom_text(stat = "count", data = subset(Cluster_SHARPandPublished4.5.long2, n_tips > 10),
+            aes(label = ..count..), size = 5, vjust = -1, position = position_nudge(y = rep(c(25,0), 10)), show.legend = FALSE) +
+  theme(plot.margin = unit(c(1,0.5,0,0), "inches")) +
+  scale_fill_discrete(labels = c("FSW", "GP", "MSM", "PWID"), name = "Population") +
+  scale_color_discrete(labels = c("FSW", "GP", "MSM", "PWID"), name = "Population")  +
+  theme(text = element_text(size = 32),
+        axis.text.y=element_text(size=18), axis.text.x=element_text(size=20))
+Cluster_SHARPandPublished4.5_barplot_by_risk_total_clust_sizes.plot2
+
+ggsave("../results/regional trends/cluster/clust4.5_risk_hist_total_clust_sizes.TN93.png", Cluster_SHARPandPublished4.5_barplot_by_risk_total_clust_sizes.plot2, width = 8, height =3, units = "in")
+
+
+
+
+
+
+# Count by number of each group in each cluster
+
+HET_Clust3 <- get_group_cluster_sizes(SHARP_and_published_Kenya.045.summary, "HET",
+                                     simplify_groups = TRUE, total_or_group_count = "group") %>%
+  rename(n_tips = N_HET)
+MSM_Clust3 <- get_group_cluster_sizes(SHARP_and_published_Kenya.045.summary, "MSM",
+                                     simplify_groups = TRUE, total_or_group_count = "group") %>%
+  rename(n_tips = N_MSM)
+FSW_Clust3 <- get_group_cluster_sizes(SHARP_and_published_Kenya.045.summary, "FSW",
+                                     simplify_groups = TRUE, total_or_group_count = "group") %>%
+  rename(n_tips = N_FSW)
+PWID_Clust3 <- get_group_cluster_sizes(SHARP_and_published_Kenya.045.summary, "PWID",
+                                     simplify_groups = TRUE, total_or_group_count = "group") %>%
+  rename(n_tips = N_PWID)
+
+#Combine
+Cluster_SHARPandPublished4.5.long3 <- rbind(HET_Clust3, MSM_Clust3) %>% rbind(FSW_Clust3) %>% rbind(PWID_Clust3)
+
+Cluster_SHARPandPublished4.5_barplot_by_risk_total_clust_sizes.plot3 <- ggplot(Cluster_SHARPandPublished4.5.long3, aes(x = n_tips, fill = risk_type, color = risk_type)) +
+  geom_histogram(position = "identity", binwidth = 1, alpha =0.5, size = 0.2) +
+  labs(x = "N Seqs from Population in Cluster") +
+  scale_x_continuous(limits = c(-1, 45), breaks = breaks,
+                     minor_breaks = NULL,  expand = c(0, 0)) +
+  scale_y_continuous(limits = c(0, 400)) + 
+  facet_wrap(~ risk_type, ncol = 2,
+             labeller = labeller(risk_type = c("FSW" = "FSW", "HET" = "GP", "MSM" = "MSM", "PWID" = "PWID"))) +
+  #ggtitle("Number of risk group seqs in cluster -\nTN93- maximum distance (0.045)") +
+  geom_text(stat = "count", data = subset(Cluster_SHARPandPublished4.5.long3 , n_tips > 10),
+            aes(label = ..count..), size = 5, vjust = -1, position = position_nudge(y = rep(c(25,0), 10)), show.legend = FALSE) +
+  #ggtitle("Number of risk group seqs in cluster -\nTN93- maximum distance (0.045)") +
+  theme(plot.margin = unit(c(1,0.5,0,0), "inches")) +
+  scale_fill_discrete(labels = c("FSW", "GP", "MSM", "PWID"), name = "Population") +
+  scale_color_discrete(labels = c("FSW", "GP", "MSM", "PWID"), name = "Population")  +
+  theme(text = element_text(size = 32),
+        axis.text.y=element_text(size=18), axis.text.x=element_text(size=20))
+Cluster_SHARPandPublished4.5_barplot_by_risk_total_clust_sizes.plot3
+
+ggsave("../results/regional trends/cluster/clust4.5_risk_hist_per_group_clust_sizes.TN93.png", Cluster_SHARPandPublished4.5_barplot_by_risk_total_clust_sizes.plot3, width = 8, height =3, units = "in")
+```
+
+
+# Save combined cluster histograms
+```{r}
+Cluster_SHARPandPublished4.5_comb.hist <- ggarrange(
+  Cluster_SHARPandPublished4.5_barplot_by_risk_total_clust_sizes.plot,
+  Cluster_SHARPandPublished4.5_barplot_by_risk.plot2,
+  Cluster_SHARPandPublished4.5_barplot_by_risk_total_clust_sizes.plot2,
+  Cluster_SHARPandPublished4.5_barplot_by_risk_total_clust_sizes.plot3,
+  ncol = 2, nrow = 2, common.legend = TRUE, legend = "right")
+Cluster_SHARPandPublished4.5_comb.hist
+ggsave("../results/regional trends/cluster/clust4.5_risk_hist_comb.png",
+    units = "in", height = 12, width = 20)
+```
+
+
+
+
+
+
+
+
+# Save data
+```{r}
+# SHARP - 1.5
+write.csv(Cluster_SHARP1.5.summary[, c("ClusterNumber", "n_tips", "GD", "Bootstrap", "year_range", "n_unique_regions", "regions", "region_P", "TipNames")], "../results/regional trends/cluster/Cluster_SHARP1.5.region_summary.csv")
+
+# SHARP - 4.5
+write.csv(Cluster_SHARP4.5.summary[, c("ClusterNumber", "n_tips", "GD", "Bootstrap", "year_range", "n_unique_regions", "regions", "region_P", "TipNames")], "../results/regional trends/cluster/Cluster_SHARP4.5.region_summary.csv")
+
+
+# SHARP and published - 1.5
+write.csv(Cluster_SHARPandPublished1.5.summary[, c("ClusterNumber", "n_tips", "GD", "Bootstrap", "year_range", "n_unique_risks", "risks", "risk_P", "TipNames")], "../results/regional trends/cluster/Cluster_SHARPandPublished1.5.risk_summary.csv")
+write.csv(Cluster_SHARPandPublished1.5.summary[, c("ClusterNumber", "n_tips", "GD", "Bootstrap", "year_range", "n_unique_regions", "regions", "region_P", "TipNames")], "../results/regional trends/cluster/Cluster_SHARPandPublished1.5.region_summary.csv")
+
+# SHARP and published - 4.5
+write.csv(Cluster_SHARPandPublished4.5.summary[, c("ClusterNumber", "n_tips", "GD", "Bootstrap", "year_range", "n_unique_risks", "risks", "risk_P", "TipNames")], "../results/regional trends/cluster/Cluster_SHARPandPublished4.5.risk_summary.csv")
+write.csv(Cluster_SHARPandPublished4.5.summary[, c("ClusterNumber", "n_tips", "GD", "Bootstrap", "year_range", "n_unique_regions", "regions", "region_P", "TipNames")], "../results/regional trends/cluster/Cluster_SHARPandPublished4.5.region_summary.csv")
+```
+
+
+
+
+# Load dated clades file and extract dates for clades of interest
+I'm not sure where the nexus file went (but .tre and .newick files are in "C:\Users\hking\OneDrive\my documents\UW\SHARP & Farquahar Lab\phylogenetic\analyses\HIV\BEAST_trees\A1\PIWD_clusters_only\cluster_dates\skygrid_uncorrelated_clock")
+```{r, eval = FALSE}
+dated_clusters.tree <- read.nexus("../HIV/BEAST_trees/A1/PWID_clusters_only/parallel2/PWID_A1_clusters_SHARPandPublished.(time).trees.nexus")
+
+plot(dated_clusters.tree, show.tip.label = FALSE, label.offset = 0.1)
+nodelabels(node = dated_clusters.tree$node.label, frame = "none", cex = 0.8, adj = c(0, 0.5))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+# Backup  
+Trying to get cluster visualization order correct
+```{r, eval = FALSE}
+Cluster_SHARPandPublished4.5.long <- Cluster_SHARPandPublished4.5.summary   %>% 
+  select(ClusterNumber, P_Central, P_Coast, P_Nairobi, P_Nyanza, P_R_valley, P_Western) %>% 
+  arrange(P_Central, P_Coast, P_Nairobi, P_Nyanza, P_R_valley, P_Western) %>%
+  mutate(ClusterNumber = factor(ClusterNumber, levels = unique(ClusterNumber))) %>%
+  pivot_longer(cols = starts_with("P_"), names_to = "region_type", values_to = "region_percentage") %>%
+  mutate(region_type = factor(region_type, levels = c("P_Central", "P_Coast", "P_Nairobi", "P_Nyanza", "P_R_valley", "P_Western")))
+Cluster_SHARPandPublished4.5.long <- Cluster_SHARPandPublished4.5.long[order(Cluster_SHARPandPublished4.5.long$region_percentage),]
+
+Central <- Cluster_SHARPandPublished4.5.long[which(Cluster_SHARPandPublished4.5.long$region_type == "P_Central"),]
+Coast <- Cluster_SHARPandPublished4.5.long[which(Cluster_SHARPandPublished4.5.long$region_type == "P_Coast"),]
+Nairobi <- Cluster_SHARPandPublished4.5.long[which(Cluster_SHARPandPublished4.5.long$region_type == "P_Nairobi"),]
+Nyanza <- Cluster_SHARPandPublished4.5.long[which(Cluster_SHARPandPublished4.5.long$region_type == "P_Nyanza"),]
+R_valley <- Cluster_SHARPandPublished4.5.long[which(Cluster_SHARPandPublished4.5.long$region_type == "P_R_valley"),]
+Western <- Cluster_SHARPandPublished4.5.long[which(Cluster_SHARPandPublished4.5.long$region_type == "P_Western"),]
+dat_long <- rbind(Central, Coast, Nairobi, Nyanza, R_valley, Western)
+dat_long$ClusterNumber <- factor(dat_long$ClusterNumber, levels = Central$ClusterNumber)
+
+
+ggplot(dat_long, aes(fill = region_type, y = region_percentage, x = ClusterNumber)) + geom_bar(position = "stack", stat = "identity")+labs(x = NULL)+theme_bw()
+
+
+```
+
+

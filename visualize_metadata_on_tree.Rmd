@@ -1,0 +1,728 @@
+---
+title: "combine_metadata_with_tree"
+author: "Hanley"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(table1)
+library(dplyr)
+
+library(ape)
+library(phytools)
+
+library(ggplot2)
+library(scales)
+library(ggpubr)
+
+library(ggtree)
+library(tidytree)
+library(ggimage)
+library(treeio)
+
+
+```
+
+```{r, color pallete, echo = FALSE}
+my_colors <- c("#004949", "#009292", "#ff6db6", "#ffb6db", "#490092", "#006ddb", "#b66dff", "#6db6ff", "#b6dbff", "#920000", "#924900", "#db6d00", "#24ff24", "#ffff6d")
+
+root <- "B.FR.1983.HXB2-LAI-IIIB-BRU.K03455" #set a default root 
+```
+
+# 1. READ IN DATA
+
+## Metadata
+```{r}
+meta_data <- readRDS("../metadata/participants.rds") %>%
+  mutate(ptid = as.character(ptid))
+
+## list of seqs in PWID cluster
+PWID_clust.SequenceNames <- scan("../results/regional trends/cluster/PWID_clust.SequenceNames.tsv", character())
+```
+
+
+## Read in trees
+
+
+### Find the roots for each tree - since this is for visualization, I'm just going to choose the oldest sequence (for the all subtype trees, I will use the olderst D sequence)
+```{r}
+# SHARP only
+#meta_data %>%
+#  filter(source == "SHARP" & hiv_subtype == "D") %>%
+#  arrange(sampling_year) %>% slice_head(n = 1) %>% pull(annotated_name)
+  
+  
+# SHARP and published
+```
+
+### Read in trees and convert to tibbles
+```{r}
+# SHARP only
+tree.SHARP_hiv <- read.tree("../HIV/GeneiousandIQtree/SHARP_only/all_subtypes/hiv_303_SHARP.newick") #%>%
+  #root(outgroup = "D.2019.PWID.Nairobi.Female.OQ299215.SP085", method = "midpoint")
+
+tree.SHARP_hiv.A1 <- read.tree("../HIV/GeneiousandIQtree/SHARP_only/A1/hiv_196_SHARP_A1.newick")
+
+
+# SHARP and published
+tree.SHARP_and_published_hiv <- read.tree("../HIV/GeneiousandIQtree/SHARP_and_published/all_subtypes/hiv_3890_SHARP_and_published.newick")
+length(tree.SHARP_and_published_hiv$tip.label)
+
+tree.SHARP_and_published_hiv.A1 <- read.tree("../HIV/GeneiousandIQtree/SHARP_and_published/A1/hiv_2681_SHARP_and_published_A1.newick")
+length(tree.SHARP_and_published_hiv.A1$tip.label)
+
+tree.SHARP_and_published_hiv.C <- read.tree("../HIV/GeneiousandIQtree/SHARP_and_published/C/hiv_302_SHARP_and_published_C.newick")
+length(tree.SHARP_and_published_hiv.C$tip.label)
+
+tree.SHARP_and_published_hiv.D <- read.tree("../HIV/GeneiousandIQtree/SHARP_and_published/D/hiv_450_SHARP_and_published_D.newick")
+length(tree.SHARP_and_published_hiv.D$tip.label)
+
+
+
+# Check
+is.binary(tree.SHARP_hiv)
+is.binary(tree.SHARP_hiv.A1)
+is.binary(tree.SHARP_and_published_hiv)
+is.binary(tree.SHARP_and_published_hiv.A1)
+is.binary(tree.SHARP_and_published_hiv.C)
+is.binary(tree.SHARP_and_published_hiv.D)
+```
+
+
+
+### Visualize trees
+export at a pdf to see node labels clearly and uses this to determine the nod fo the outgroup clade (subtype D) to be dropped
+```{r, fig.height=60, fig.width=20}
+#SHARP only
+plot(tree.SHARP_hiv, cex = 0.2, edge.width = 0.5) 
+nodelabels(col = "red", frame = "none", bg = "transparent", adj = c(0, -0.3), cex = 0.2) 
+tree.SHARP_hiv$Nnode
+
+
+#SHARP and published
+plot(tree.SHARP_and_published_hiv, cex = 0.2, edge.width = 0.2)
+nodelabels(col = "red", frame = "none", bg = "transparent", adj = c(0, -0.3), cex = 0.2) 
+tree.SHARP_and_published_hiv$Nnode
+```
+
+
+
+# 2. FILTER TREES
+
+
+### Drop large 2010 PWID clade (A1) - default- don't dp 
+IMPORTANT: if tree is recreated, clade position will change!
+```{r, eval = FALSE}
+
+length(PWID_clust.SequenceNames)
+# check - should be true
+all(PWID_clust.SequenceNames %in% tree.SHARP_and_published_hiv$tip.label)
+all(PWID_clust.SequenceNames %in% tree.SHARP_and_published_hiv.A1$tip.label)
+
+
+#Drop these seqs (and check there are 43 fewer seqeunces)
+tree.SHARP_and_published_hiv.for_plots <- tree.SHARP_and_published_hiv #Save a tree without the tip dropped (for visualization only)
+
+length(tree.SHARP_and_published_hiv$tip.label)
+tree.SHARP_and_published_hiv <- drop.tip(tree.SHARP_and_published_hiv, PWID_clust.SequenceNames)
+length(tree.SHARP_and_published_hiv$tip.label)
+
+length(tree.SHARP_and_published_hiv.A1$tip.label)
+tree.SHARP_and_published_hiv.A1 <- drop.tip(tree.SHARP_and_published_hiv.A1, PWID_clust.SequenceNames) 
+length(tree.SHARP_and_published_hiv.A1$tip.label)
+```
+
+
+### Optional: Make seperate trees droping non-Coast or Nairobi seqs from Kenya tree
+```{r}
+notCN_tips <- meta_data %>% filter(is.na(region.CN)) %>% pull(annotated_name)
+
+# SHARP and published
+
+tree.SHARP_and_published_hiv.CN <- tree.SHARP_and_published_hiv %>% drop.tip(notCN_tips)
+length(tree.SHARP_and_published_hiv.CN$tip.label)
+
+tree.SHARP_and_published_hiv.A1.CN <- tree.SHARP_and_published_hiv.A1 %>% drop.tip(notCN_tips)
+length(tree.SHARP_and_published_hiv.A1.CN$tip.label)
+
+tree.SHARP_and_published_hiv.C.CN <- tree.SHARP_and_published_hiv.C %>% drop.tip(notCN_tips)
+length(tree.SHARP_and_published_hiv.C.CN$tip.label)
+
+tree.SHARP_and_published_hiv.D.CN <- tree.SHARP_and_published_hiv.D %>% drop.tip(notCN_tips)
+length(tree.SHARP_and_published_hiv.D.CN$tip.label)
+
+```
+
+
+
+
+# 3. COMBINE METADATA WITH TREE
+
+## Convert trees to tibbles
+```{r}
+
+# SHARP
+tree.SHARP_hiv.tibble <- as_tibble(tree.SHARP_hiv)
+tree.SHARP_hiv.A1.tibble <- as_tibble(tree.SHARP_hiv.A1)
+
+# SHARP and published
+tree.SHARP_and_published_hiv.tibble <- as_tibble(tree.SHARP_and_published_hiv)
+tree.SHARP_and_published_hiv.A1.tibble <- as_tibble(tree.SHARP_and_published_hiv.A1)
+tree.SHARP_and_published_hiv.C.tibble <- as_tibble(tree.SHARP_and_published_hiv.C)
+tree.SHARP_and_published_hiv.D.tibble <- as_tibble(tree.SHARP_and_published_hiv.D)
+
+# Optional: for Coast-Nairobi only trees
+tree.SHARP_and_published_hiv.CN.tibble <- as_tibble(tree.SHARP_and_published_hiv.CN)
+tree.SHARP_and_published_hiv.A1.CN.tibble <- as_tibble(tree.SHARP_and_published_hiv.A1.CN)
+tree.SHARP_and_published_hiv.C.CN.tibble <- as_tibble(tree.SHARP_and_published_hiv.C.CN)
+tree.SHARP_and_published_hiv.D.CN.tibble <- as_tibble(tree.SHARP_and_published_hiv.D.CN)
+
+```
+
+
+## Get a list of variables of interest
+```{r}
+variables <- c("ptid", "Sequence.name", "annotated_name", "tree_seq_name", "source", "index_or_partner.F", "index_ptid", "index_ptids.F", "partner_type_comb.F", "sex", "age", "enrollment_date", "sampling_year.F", "region", "region.CN", "rcdmoneysex", "everinjecteddrugs", "hiv_status_final.F", "hcvresults_final", "hiv_subtype.F", "hiv_subtype2.F", "risk", "risk2.F", "risk3.F", "risk4.F", "PWID_region.comb", "HET.F", "MSM.F", "FSW.F", "PWID.F", "hiv_vl", "shipment")
+```
+Note:  
+.F = final (manipulated variable)  
+
+## Checks - all tree tip labels are in metadata
+```{r}
+# SHARP
+all(tree.SHARP_hiv$tip.label %in% meta_data$annotated_name)
+all(tree.SHARP_hiv.A1$tip.label %in% meta_data$annotated_name)
+
+# SHARP and published
+all(tree.SHARP_and_published_hiv$tip.label %in% meta_data$annotated_name)
+all(tree.SHARP_and_published_hiv.A1$tip.label %in% meta_data$annotated_name)
+all(tree.SHARP_and_published_hiv.C$tip.label %in% meta_data$annotated_name)
+all(tree.SHARP_and_published_hiv.D$tip.label %in% meta_data$annotated_name)
+
+```
+TO DO: update SHARP tree
+
+
+## Add metadata to trees
+```{r}
+
+# SHARP
+tree.SHARP_hiv.meta <- left_join(tree.SHARP_hiv.tibble, meta_data[, variables], by = c("label" = "annotated_name"))
+tree.SHARP_hiv.A1.meta <- left_join(tree.SHARP_hiv.A1.tibble, meta_data[, variables], by = c("label" = "annotated_name"))
+
+# SHARP and published
+tree.SHARP_and_published_hiv.meta <- left_join(tree.SHARP_and_published_hiv.tibble, meta_data[, variables], by = c("label" = "annotated_name"))
+tree.SHARP_and_published_hiv.A1.meta <- left_join(tree.SHARP_and_published_hiv.A1.tibble, meta_data[, variables], by = c("label" = "annotated_name"))
+tree.SHARP_and_published_hiv.C.meta <- left_join(tree.SHARP_and_published_hiv.C.tibble, meta_data[, variables], by = c("label" = "annotated_name"))
+tree.SHARP_and_published_hiv.D.meta <- left_join(tree.SHARP_and_published_hiv.D.tibble, meta_data[, variables], by = c("label" = "annotated_name"))
+
+
+# SHARP and published - Coast and Nairobi only
+tree.SHARP_and_published_hiv.CN.meta <- left_join(tree.SHARP_and_published_hiv.CN.tibble, meta_data[, variables], by = c("label" = "annotated_name"))
+tree.SHARP_and_published_hiv.A1.CN.meta <- left_join(tree.SHARP_and_published_hiv.A1.CN.tibble, meta_data[, variables], by = c("label" = "annotated_name"))
+tree.SHARP_and_published_hiv.C.CN.meta <- left_join(tree.SHARP_and_published_hiv.C.CN.tibble, meta_data[, variables], by = c("label" = "annotated_name"))
+tree.SHARP_and_published_hiv.D.CN.meta <- left_join(tree.SHARP_and_published_hiv.D.CN.tibble, meta_data[, variables], by = c("label" = "annotated_name"))
+
+```
+Total tree labels (SHARP and lanl sequences): `r `length(unique(tree.SHARP_hiv.meta$label))`  
+
+
+
+
+
+<br><br<br>
+
+# 4. SAVE OUTPUTS
+```{r}
+
+# SHARP
+saveRDS(tree.SHARP_hiv, "../HIV/tree.SHARP_hiv.rds")
+saveRDS(tree.SHARP_hiv.meta, "../HIV/meta_tree.SHARP_hiv.rds")
+
+saveRDS(tree.SHARP_hiv.A1, "../HIV/tree.SHARP_hiv.A1.rds")
+saveRDS(tree.SHARP_hiv.A1.meta, "../HIV/meta_tree.SHARP_hiv.A1.rds")
+
+
+
+# SHARP and published
+saveRDS(tree.SHARP_and_published_hiv, "../HIV/tree.hiv.rds")
+saveRDS(tree.SHARP_and_published_hiv.meta, "../HIV/meta_tree.hiv.rds")
+
+saveRDS(tree.SHARP_and_published_hiv.A1, "../HIV/tree.hiv.A1.rds")
+saveRDS(tree.SHARP_and_published_hiv.A1.meta, "../HIV/meta_tree.hiv.A1.rds")
+
+saveRDS(tree.SHARP_and_published_hiv.C, "../HIV/tree.hiv.C.rds")
+saveRDS(tree.SHARP_and_published_hiv.C.meta, "../HIV/meta_tree.hiv.c.rds")
+
+saveRDS(tree.SHARP_and_published_hiv.D, "../HIV/tree.hiv.D.rds")
+saveRDS(tree.SHARP_and_published_hiv.D.meta, "../HIV/meta_tree.hiv.D.rds")
+  
+
+
+# SHARP and published - Coast and Nairobi only
+saveRDS(tree.SHARP_and_published_hiv.CN, "../HIV/tree.hiv.CN.rds")
+saveRDS(tree.SHARP_and_published_hiv.CN.meta, "../HIV/meta_tree.hiv.CN.rds")
+
+saveRDS(tree.SHARP_and_published_hiv.A1.CN, "../HIV/tree.hiv.CN.A1.rds")
+saveRDS(tree.SHARP_and_published_hiv.A1.CN.meta, "../HIV/meta_tree.hiv.CN.A1.rds")
+
+saveRDS(tree.SHARP_and_published_hiv.C.CN, "../HIV/tree.hiv.CN.C.rds")
+saveRDS(tree.SHARP_and_published_hiv.C.CN.meta, "../HIV/meta_tree.hiv.CN.c.rds")
+
+saveRDS(tree.SHARP_and_published_hiv.D.CN, "../HIV/tree.hiv.CN.D.rds")
+saveRDS(tree.SHARP_and_published_hiv.D.CN.meta, "../HIV/meta_tree.hiv.CN.D.rds")
+
+```
+
+
+
+
+
+
+
+<br><br><br><br>
+
+
+## 5. VISUALIZE TREES
+```{r}
+# Add metadata to the tree for plotting
+tree.SHARP_and_published_hiv.for_plots.tibble <- as_tibble(tree.SHARP_and_published_hiv.for_plots)
+tree.SHARP_and_published_hiv.for_plots.meta <- left_join(tree.SHARP_and_published_hiv.for_plots.tibble, meta_data[, variables], by = c("label" = "annotated_name"))
+
+
+
+# Save a tree with no metadata
+blank_tree <- ggtree(tree.SHARP_hiv) %<+%
+  tree.SHARP_hiv.meta +
+  geom_treescale() +
+  geom_tippoint(shape = 21, fill = "purple")
+blank_tree
+ggsave(blank_tree, file = "../results/HIV/blank_tree.SHARP_hiv.png", width = 8, height = 10.5, units = "in") 
+
+
+
+#FUNCTION: creates a basic phylogeny tree (with points outlined by source (SHARP vs published) and colored by a named variable and saves it
+basic_tree <- function(treedata_obj, tree_meta, variable, out_image_path = NULL) {
+  unique_variable <- length(unique(na.omit(tree_meta[, variable, drop = TRUE])))
+
+  tree_plot <- ggtree(treedata_obj) %<+%
+    tree_meta +
+    geom_tippoint(shape = 21, aes_string(colour = "source", fill = variable)) +
+    scale_colour_manual(values = c(000000, "black")) + 
+    scale_fill_manual(values = my_colors[1:unique_variable]) +
+    geom_treescale()
+  
+  if(!is.null(out_image_path)){
+    ggsave(tree_plot, file = out_image_path, width = 8, height = 10.5, units = "in")
+  }
+    
+  return(tree_plot)
+}
+
+# SHARP-only
+
+#Get the basic tree for the sharp-only HIV phylogeny
+genotypeXsource.SHARP_hiv.tree <- basic_tree(tree.SHARP_hiv, tree.SHARP_hiv.meta,
+                                        variable = "hiv_subtype2.F",
+                                                  out_image_path = "../results/HIV/genotypeXsource.SHARP_hiv.png")
+genotypeXsource.SHARP_hiv.tree
+
+
+
+#SHARP and published seqs
+
+genotypeXsource.hiv.tree <- basic_tree(tree.SHARP_and_published_hiv.for_plots, tree.SHARP_and_published_hiv.for_plots.meta,
+                                        variable = "hiv_subtype2.F",
+                                                  out_image_path = "../results/HIV/genotypeXsource.hiv.png")
+genotypeXsource.hiv.tree 
+
+
+# By year
+year.hiv.tree <- ggtree(tree.SHARP_and_published_hiv.for_plots) %<+%
+  tree.SHARP_and_published_hiv.for_plots.meta +
+  geom_tippoint(shape = 21, size = 4, stroke = 0.6, aes(colour = source, fill = sampling_year.F)) +
+  scale_colour_manual(values = c("darkgreen", "cyan1", "blue")) +
+  scale_fill_gradientn(colours = colorspace::heat_hcl(7)) +
+  geom_treescale()
+year.hiv.tree 
+
+ggsave(year.hiv.tree , file = "../results/HIV/year.hiv.png", width = 8, height = 10.5, units = "in")
+
+
+# By PWID
+tree.SHARP_and_published_hiv.for_plots.meta <- tree.SHARP_and_published_hiv.for_plots.meta %>%
+  mutate(PWID.temp = case_when(is.na(PWID.F) & (source == "SHARP" | source == "published")~ "No",
+  !is.na(PWID.F) & (source == "SHARP" | source == "published") ~ "Yes")) #change variable to yes or no
+PWID.hiv.tree <- ggtree(tree.SHARP_and_published_hiv.for_plots) %<+%
+  tree.SHARP_and_published_hiv.for_plots.meta +
+  geom_tippoint(size = 2, stroke = 0.6, aes(colour = PWID.temp, fill = source, shape = PWID.temp)) +
+  scale_colour_manual(values = c("darkgreen", "cyan1")) +
+  scale_fill_manual(values = c(000000, "red")) +
+  scale_shape_manual(values = c(21, 22)) +
+  geom_treescale() +
+  guides(fill = guide_legend(override.aes = list(colour = c(000000, "red"))))
+
+PWID.hiv.tree 
+
+ggsave(PWID.hiv.tree , file = "../results/HIV/PWID.hiv.png", width = 8, height = 10.5, units = "in")
+
+
+# By risk
+risk.hiv.tree <- ggtree(tree.SHARP_and_published_hiv.for_plots) %<+%
+  tree.SHARP_and_published_hiv.for_plots.meta +
+  geom_tippoint(size = 3, stroke = 1, aes(colour = risk4.F, fill = PWID.temp, shape = source)) +
+  scale_colour_manual(breaks=c('HET', 'FSW', 'MSM', "PWID"), #specifiy order
+                      values = c("HET" = "darkgrey", "FSW" = "#F8766D", "MSM" = "#00BFC4", "PWID" = "#C77CFF"),
+                      labels = c("GP", "FSW", "MSM", "PWID")) + #Warning, colors are assigned to values manually! Make sure everything is in expected order based on breaks argumen
+  scale_fill_manual(values = c(000000, "darkviolet")) +
+  scale_shape_manual(values = c(21, 22)) +
+  geom_treescale(fontsize = 12, width = 0.05, offset = -125) + #offset is set here to be correct for the combined final plot (if you just want this plot by itself, you should actually drop the offset)
+  guides(
+    colour = guide_legend(override.aes = list(size = 6, shape=21,
+                                              fill = c(000000, 000000, 000000, "darkviolet")),
+                          title="Population"),
+    fill = "none",
+    shape = guide_legend(override.aes = list(size = 6), title="Sequence Source")) +
+  theme(text=element_text(size=40)) 
+
+risk.hiv.tree 
+
+ggsave(risk.hiv.tree , file = "../results/HIV/risk.hiv.png", width = 20, height = 25, units = "in")
+
+
+# Zoomed in for visualization purposes
+risk.hiv.tree.zoomed <- risk.hiv.tree  +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim = c(0.15, 0.255), ylim = c(2370, 2650))
+ggsave(risk.hiv.tree.zoomed, file = "../results/HIV/risk.hiv.zoomed.png", width = 8, height = 6, units = "in")
+
+#Zoom in on large PWID cluster
+risk.hiv.tree.zoomed2 <- risk.hiv.tree  +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim = c(0.05, 0.20), ylim = c(2100, 2200))
+ggsave(risk.hiv.tree.zoomed2, file = "../results/HIV/risk.hiv.zoomedPWIDclust.png", width = 8, height = 6, units = "in")
+
+
+
+# By region
+unique_regions <- length(unique(na.omit(tree.SHARP_and_published_hiv.for_plots.meta$region)))
+
+region.hiv.tree <- ggtree(tree.SHARP_and_published_hiv.for_plots) %<+%
+  tree.SHARP_and_published_hiv.for_plots.meta +
+  geom_tippoint(shape = 21, aes(colour = source, fill = region)) +
+  scale_colour_manual(values = c(000000, my_colors[1:unique_regions])) +
+  geom_treescale()
+
+region.hiv.tree 
+
+ggsave(region.hiv.tree, file = "../results/HIV/region.hiv.png", width = 8, height = 10.5, units = "in")
+
+
+
+# By risk and region
+riskandregion.hiv.tree <- ggtree(tree.SHARP_and_published_hiv.for_plots) %<+%
+  tree.SHARP_and_published_hiv.for_plots.meta +
+  geom_tippoint(size = 3, stroke = 0.7, aes(fill = PWID.temp, color = region.CN, shape = source)) +
+  scale_fill_manual(values = c("Yes" = "darkviolet", "No" = 000000), 
+                           breaks = c("Yes"), labels = c("PWID")) +
+  scale_color_manual(
+    breaks=c('Coast', 'Nairobi', NA), #specifiy order
+    values = c("green","deeppink", NA),
+    labels = c('Coast', 'Nairobi', "other region")) + #alternatively, scale_color_manual(values = c("purple","green", NA), na.value = "transparent") to have NA values not show up
+  scale_shape_manual(values = c(21, 22))+
+  geom_treescale(fontsize = 12, width = 0.05, offset = -125) + #offset is set here to be correct for the combined final plot (if you just want this plot by itself, you should actually drop the offset)
+  guides(
+    colour = guide_legend(override.aes = list(size = 6, shape=21), title="Region"),
+    fill = guide_legend(title = "PWID", override.aes = list(shape = 19, size = 6, color = "darkviolet"), label = FALSE),
+    shape = guide_legend(override.aes = list(size = 6), title="Sequence Source")) +
+  theme(text=element_text(size=40))
+
+
+riskandregion.hiv.tree 
+
+ggsave(riskandregion.hiv.tree, file = "../results/HIV/riskandregion.hiv.png", width = 20, height = 25, units = "in")
+
+# Zoomed in for visualization purposes
+riskandregion.hiv.tree.zoomed <- riskandregion.hiv.tree  +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim = c(0.15, 0.255), ylim = c(2370, 2650))
+ggsave(riskandregion.hiv.tree.zoomed, file = "../results/HIV/riskandregion.hiv.tree.zoomed.png", width = 8, height = 6, units = "in")
+
+
+
+
+# Combined Risk and Rick&Region Plot for publication
+risk.hiv.tree2  <- risk.hiv.tree + layout_dendrogram() +
+  theme(legend.position="bottom", legend.box = "vertical",
+        plot.margin = margin(0, 0.5, 0.5, 1.5, "in"))
+riskandregion.hiv.tree2 <- riskandregion.hiv.tree + layout_dendrogram() +
+  theme(legend.position="bottom", legend.box = "vertical",
+        plot.margin = margin(0.5, 0.5, 0, 1.5, "in"))
+
+phylogenies_Fig1 <- ggarrange(risk.hiv.tree2, riskandregion.hiv.tree2, nrow = 2)
+
+ggsave(phylogenies_Fig1 , file = "../results/HIV/phylogenies_Fig1.png", width = 35, height = 25, units = "in")
+
+
+
+# by batch
+
+unique_shipment <-length(na.omit(unique(tree.SHARP_hiv.meta$shipment)))
+
+shipment.hiv.tree <- ggtree(tree.SHARP_hiv) %<+%
+  tree.SHARP_hiv.meta +
+  geom_tippoint(shape = 21, aes(fill = shipment)) +
+  scale_fill_manual(values = c(my_colors[1:unique_shipment-1], 000000)) +
+  geom_treescale()
+
+shipment.hiv.tree 
+
+ggsave(shipment.hiv.tree, file = "../results/HIV/shipment.hiv.png", width = 8, height = 10.5, units = "in")
+```  
+to do: tidy script so the same function can be used for all  
+save tree outside of tree-generating function - this is better coding practice   
+Remove NA from source key (only internal nodes have NA values)     
+Subtype label bars not longer accurate. Need to fix for the new tree  
+Why are some published seqs missing subtypes?  
+Why no year for published seqs?  
+
+
+Here's example code for labeling clades with subtypes (but probably easier to do after-the fact): 
++ geom_cladelabel(437, "A1", offset = 0.1, barsize=1, angle=90, offset.text = 0.005, hjust=0.5, fontsize=4) 
+Use this to rotate nodes:  %>% ggtree::rotate(476) 
+
+
+<br><br><br><br>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<br><br><br><br><br><br>
+
+# Backup - tree without annotated names (used in APS paper)
+
+
+### FUNCTION - read in trees and remove problematic labels from tips
+```{r, eval = FALSE}
+#FUNCTION: reads in a Newick tree, converts tip labels to match SHARP ptids, and converts to a dataframe (treedata object)
+read_tree <- function(tree_file_path){
+  tree <- read.tree(tree_file_path) %>%
+  #change tip labels to only include ptids(for SHARP sequences)and to drop parenthesis from published seqs (there were some duplicates that got labeled "(2)")
+  plyr::mutate(tip.label = gsub("'", "", tip.label)) %>%
+  plyr::mutate(tip.label = gsub("\\|.*", "", tip.label)) %>%
+  plyr::mutate(tip.label =
+                 gsub("_Thermo.*|_Sanger.*|_ship.*|_PRRT.*|_WGS.*|_DBS.*",
+                      "", tip.label)) %>%
+  plyr::mutate(tip.label = gsub("_PRRT", "", tip.label)) %>%
+  plyr::mutate(tip.label = gsub(" (*)", "", tip.label)) %>%
+  plyr::mutate(tip.label = gsub("__2_", "", tip.label)) %>%
+  plyr::mutate(tip.label = gsub(" (2)", "", tip.label))  
+  
+  return(tree)
+}
+```
+
+
+
+```{r, eval = FALSE}
+#SHARP-only sequences
+tree.SHARP_hiv <- read_tree("../HIV/IQ_tree/SHARP_and_published_post2009/SHARP_all subtypes/with_outgroup/SHARP_303_all_subtypes_Doutgroup_IQ_tree.newick")
+#Also as a tibble (this allows merging with metadata)
+tree.SHARP_hiv.tibble  <- as_tibble(tree.SHARP_hiv)
+
+#SHARP and published sequences
+tree.hiv <- read_tree("../HIV/IQ_tree/SHARP_and_published_post2009/SHARP_and_published_all_subtypes/with_outgroup/SHARP_and_published_1255_all_subtypes_Doutgroup_IQ_tree.newick")
+tree.hiv.tibble  <- as_tibble(tree.hiv)
+
+# Subtype-specific trees - not using
+#tree.SHARP_hiv.A1 <- read_tree("../HIV/IQ_tree/SHARP_A1/SHARP_A1_195_IQ_tree.newick")
+#tree.SHARP_hiv.C <- read_tree("../HIV/IQ_tree/SHARP_C/SHARP_C_33_IQ_tree.newick")
+#tree.SHARP_hiv.D <- read_tree("../HIV/IQ_tree/SHARP_D/SHARP_D_18_IQ_tree.newick")
+```  
+
+
+## Filter metadata
+```{r, eval = FALSE}
+data.hiv <- data %>% filter(ptid %in% tree.hiv$tip.label | Sequence.name %in% tree.hiv$tip.label)
+```
+
+TO DO: Drop this step - no need to prefilter data (just use left_join). This reduced likelihood of accidentally droppign incorect seqs from data
+
+## Checks
+
+### Check for correct placement of outgroups
+```{r, eval = FALSE}
+#the only sequences that are in the tree but not the metadata should be the outgroups
+tree.hiv$tip.label[!(tree.hiv$tip.label %in% data.hiv$tree_seq_name)]
+
+#the only sequences in the tree but not the metadata should be the outgroups
+tree.SHARP_hiv$tip.label[!(tree.SHARP_hiv$tip.label %in% data.hiv$ptid)]
+```
+
+### check that trees are binary (bifurcating) and rooted  
+These should all be true
+```{r, eval = FALSE}
+
+# SHARP
+is.binary.phylo(tree.SHARP_hiv)
+is.rooted.phylo(tree.SHARP_hiv)
+
+# SHARP and published
+is.binary.phylo(tree.hiv)
+is.rooted.phylo(tree.hiv)
+```
+
+### Visualize trees
+export at a pdf to see node labels clearly and uses this to determine the nod fo the outgroup clade (subtype D) to be dropped
+```{r, eval = FALSE, fig.height=60, fig.width=20}
+#SHARP only
+plot(tree.SHARP_hiv, cex = 0.2, edge.width = 0.5) 
+nodelabels(col = "red", frame = "none", bg = "transparent", adj = c(0, -0.3), cex = 0.2) 
+tree.SHARP_hiv$Nnode
+
+
+#SHARP and published
+plot(tree.hiv, cex = 0.2, edge.width = 0.2)
+nodelabels(col = "red", frame = "none", bg = "transparent", adj = c(0, -0.3), cex = 0.2) 
+tree.hiv$Nnode
+```
+
+
+
+### If using the rooted tree, exclude the root node(s) before doing calculations. 
+IMPORTANT: check that correct clade is extracted every time!
+```{r, eval = FALSE}
+# SHARP
+tree.SHARP_hiv2 <- extract.clade(tree.SHARP_hiv, 322)
+tree.SHARP_hiv.tibble2  <- as_tibble(tree.SHARP_hiv2)
+
+plot(tree.SHARP_hiv2, cex = 0.3, edge.width = 0.5)
+nodelabels(col = "red", frame = "none", bg = "transparent", adj = c(0, -0.3), cex = 0.3) 
+tree.SHARP_hiv2$Nnode
+length(tree.SHARP_hiv2$tip.label)
+
+#15 "outgroup sequences (from UG and TZ) were included, so this should have dropped 15 nodes. HOWEVER, I must visually check that the correct nodes were dropped as well - this must be true!
+if(tree.SHARP_hiv2$Nnode != tree.SHARP_hiv$Nnode - 15){
+  stop("Expected 15 outgroups to be removed but ", tree.SHARP_hiv$Nnode - tree.SHARP_hiv2$Nnode, " were removed.")
+}
+
+
+# SHARP and published
+tree.hiv2 <- extract.clade(tree.hiv, 1273)
+tree.hiv.tibble2 <- as_tibble(tree.hiv2)
+
+#One particular clade is causing trouble, so remove that as
+#bad_clade <- extract.clade(tree.hiv2, 2508)
+#plot(bad_clade)
+#tree.hiv2 <- drop.tip(tree.hiv2, bad_clade$tip.label)
+
+plot(tree.hiv2, cex = 0.2, edge.width = 0.2)
+nodelabels(col = "red", frame = "none", bg = "transparent", adj = c(0, -0.3), cex = 0.2) 
+tree.hiv2$Nnode
+length(tree.hiv2$tip.label)
+
+#15 "outgroup sequences (from UG and TZ) were included, so this should have dropped 15 nodes. HOWEVER, I must visually check that the correct nodes were dropped as well - this must be true!
+if(tree.hiv2$Nnode != tree.hiv$Nnode - 15){
+  stop("Expected 15 outgroups to be removed but ", tree.hiv$Nnode - tree.hiv2$Nnode, " were removed.") #here we expect 18 seqeunces to be removed because we als oextracted a clade with 3 "problematic" sequences
+}
+```
+
+
+
+
+# 2. COMBINE METADATA WITH TREE AND VISUALIZE
+
+## Get a list of variables of interest
+```{r, eval = FALSE}
+variables <- c("ptid", "Sequence.name", "annotated_name", "tree_seq_name", "source", "index_or_partner.F", "index_ptid", "index_ptids.F", "partner_type_comb.F", "sex", "age", "enrollment_date", "sampling_year.F", "region", "region.CN", "rcdmoneysex", "everinjecteddrugs", "hiv_status_final.F", "hcvresults_final", "hiv_subtype.F", "hiv_subtype2.F", "risk", "risk2.F", "risk3.F", "risk4.F", "PWID_region.comb", "HET.F", "MSM.F", "FSW.F", "PWID.F", "hiv_vl", "shipment")
+```
+Note:  
+.F = final (manipulated variable)  
+
+## Checks - all tree tip labels are in metadata
+```{r, eval = FALSE}
+tree.SHARP_hiv$tip.label[!(tree.SHARP_hiv$tip.label %in% data$tree_seq_name)] #The only seqs not in data.hiv should be the reference sequences (which start with "D.UG" or "D.TZ")
+
+tree.hiv$tip.label[!(tree.hiv$tip.label %in% data$tree_seq_name)] #The only seqs not in data.hiv should be the reference sequences (which start with "D.UG" or "D.TZ")
+
+```
+TO DO: update SHARP tree
+
+
+## Add metadata to tree
+```{r, eval = FALSE}
+# With root
+#SHARP-only tree
+tree.SHARP_hiv.meta <- left_join(tree.SHARP_hiv.tibble, data.hiv[, variables], by = c("label" = "tree_seq_name")) %>%
+  #label the root node - note: this only matters if deciding not to remove the root node
+  mutate(source = ifelse(label == root, "root", source))
+
+#SHARP and published sequences
+tree.hiv.meta <- left_join(tree.hiv.tibble, data.hiv[, variables], by = c("label" = "tree_seq_name")) %>%
+  #label the root node - note: this only matters if deciding not to remove the root node
+  mutate(source = ifelse(label == root, "root", source))
+
+
+# Without root
+
+#SHARP-only tree
+tree.SHARP_hiv.meta2 <- left_join(tree.SHARP_hiv.tibble2, data.hiv[, variables], by = c("label" = "tree_seq_name"))
+
+#SHARP and published sequences
+tree.hiv.meta2 <- left_join(tree.hiv.tibble2, data.hiv[, variables], by = c("label" = "tree_seq_name"))
+```
+Total tree labels (SHARP and lanl sequences): `r `length(unique(tree.SHARP_hiv.meta$label))`  
+
+
+<br><br<br>
+
+# SAVE OUTPUTS
+## SHARP-only
+```{r, eval = FALSE}
+## Save tree and tree-object
+saveRDS(tree.SHARP_hiv, "../HIV/tree.SHARP_hiv_with_root.rds")
+saveRDS(tree.SHARP_hiv.meta, "../HIV/meta_tree.SHARP_hiv_with_root.rds")
+```
+
+### Save tree and tree-object without root
+```{r, eval = FALSE}
+if(exists("tree.SHARP_hiv2")){
+  saveRDS(tree.SHARP_hiv2, "../HIV/tree.SHARP_hiv.rds")
+  saveRDS(tree.SHARP_hiv.meta2, "../HIV/meta_tree.SHARP_hiv.rds")
+}
+```
+
+
+## SHARP and published sequences
+```{r, eval = FALSE}
+## Save tree and tree-object with HXB2 root
+saveRDS(tree.hiv, "../HIV/tree.hiv_with_root.rds")
+saveRDS(tree.hiv.meta, "../HIV/meta_tree.hiv_with_root.rds")
+```
+
+### Save tree and tree-object without root
+```{r, eval = FALSE}
+if(exists("tree.hiv2")){
+  saveRDS(tree.hiv2, "../HIV/tree.hiv.rds")
+  saveRDS(tree.hiv.meta2, "../HIV/meta_tree.hiv.rds")
+}
+```
+
+

@@ -1,0 +1,267 @@
+---
+title: "parse_fasta_files"
+author: "Hanley"
+date: "`r Sys.Date()`"
+output: html_document
+--- 
+
+# Read in a fasta file and extract subsets (as fasta files) based on subtype
+## Also save ptid lists for all individuals within each subset
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(seqinr)
+library(dplyr)
+library(stringr)
+
+library(readxl)
+library(kableExtra)
+```
+
+
+
+
+# COMET - COMET genotypes were only used in APS analysis - I'm now using REGA genotypes instead
+
+# Read in sequences and subtype info
+```{r}
+
+# subtypes
+#Note: COMET output is a tab-separated CSV, so it either needs to be read into excel and resaved as a csv (which is what I did) or use read.table with sep = "\t"
+COMET_subtype.SHARP_hiv <- read.csv("../HIV/lanl output, ref seqs, COMET output/sharp/sharp_hiv_313_all.subtypes.csv",header = TRUE)
+
+COMET_subtype.published_hiv <- read.csv("../HIV/lanl output, ref seqs, COMET output/published/published_hiv_4058.all.subtypes.csv",  header = TRUE)
+
+#published HIV seq metadata to compare subtypes to COMET
+HIV_published <- read_excel("../HIV/ref seqs from George/4058-kenyan-HIVpol-metadata.xlsx", sheet = 1)
+
+#Get a list of excluded sequences - based on Geneious alignment
+excluded_seqs <- read.table("../HIV/GeneiousandIQtree/sharp_only/sharp_hiv_10.bad.ptids.tsv", header = TRUE) %>%  pull("Name")
+```
+
+
+# Reformat subtypes
+```{r}
+reformat_COMET_subtypes <- function(COMET_file, extract_name = TRUE){
+  reformated_subtypes <-  COMET_file %>%
+      #We will add a name column ptid that matches the shorter naming format used in the SHARP metadata, while keeping the format used in Geneious as "long_name"
+  mutate(
+    long_name = as.character(name),
+    Sequence.name = gsub(">", "", long_name) %>% gsub("\\|.*", "", .) %>% as.character(),
+      
+      #parse subtypes:
+      #unassigned = labeled unassigned or has bootstrap support <60
+      #Most possible recombinant are labeled unassigned but there are also some sequences with two subtypes listed 
+      COMET_subtype.F = case_when(
+        grepl("cpx", subtype) ~ "recombinant",
+        str_count(subtype, "[A-Z]") > 1 & grepl("-", subtype) ~ "unassigned", #if more than 1 subtype is listed, seperated by a "-", 
+        str_count(subtype, "[A-Z]") > 1 ~ "recombinant", #if more than 1 subtype is listed in a row, call recombinant
+        grepl("unassigned", subtype) | is.na(bootstrap.support) ~ "unassigned", #otherwise, if unnassigned or with low or 0 bootstrap support, label as low-confidence
+        TRUE ~ subtype),
+    COMET_subtype.F = as.factor(COMET_subtype.F),
+      #Whether sequence should be included in a non-recombinant analysis:
+      non_recombinants = case_when(
+        COMET_subtype.F == "recombinant" | is.na(COMET_subtype.F) ~ 0,
+        TRUE ~ 1
+      ),
+      #Assign sequences the geneotype with the most support, regardless of confidence - to be used for analyses that can include recombinants and low confidence gneotypes 
+      COMET_subtype_best_guess.F = ifelse(grepl("cpx", subtype), "cpx",
+        gsub("-.*|.* |[0-9]+_|\\(|\\)", "", subtype)) %>%
+        as.factor(),
+
+      #Because most people are A1, we will compare A1 to other - make a new column for this comparison
+      A1_subtype = case_when(
+        COMET_subtype_best_guess.F == "A1" ~ "A1",
+        #Make other A subtypes NA because they are rare and we don't want to count them as A or not A
+        COMET_subtype_best_guess.F == "A2" |
+          COMET_subtype_best_guess.F == "AG" |
+          COMET_subtype_best_guess.F == "A2D" ~ as.character(NA),
+        TRUE ~ "other"
+      ) %>%
+        as.factor(),
+      #indicate sequences that were excluded based on low-coverage in Geneious analyses
+      included_seqs = case_when(
+        long_name %in% excluded_seqs ~ 0,
+        TRUE ~ 1),
+      #indicate sequences that had low coverage or were marked as problematic in the sample data
+      #low_coverage = case_when
+    ) %>%
+    select(Sequence.name, COMET_subtype.F, COMET_subtype_best_guess.F, A1_subtype, non_recombinants)
+  
+  return(reformated_subtypes)
+}
+
+
+# HIV
+COMET_subtype.SHARP_hiv <- reformat_COMET_subtypes(COMET_subtype.SHARP_hiv)
+
+COMET_subtype.published_hiv <- reformat_COMET_subtypes(COMET_subtype.published_hiv)
+
+#Make a combined subtype dataframe
+COMET_subtype.SHARP_and_published_hiv <- rbind(COMET_subtype.SHARP_hiv, COMET_subtype.published_hiv)
+
+# HCV
+#COMET_subtype.SHARP_hcv <- reformat_COMET_subtypes(COMET_subtype.SHARP_hcv, HIVorHCV = "HCV")
+
+```
+
+
+## save
+```{r}
+# HIV
+saveRDS(COMET_subtype.SHARP_hiv, paste0("../HIV/lanl output, ref seqs, COMET output/sharp/sharp_hiv_", nrow(COMET_subtype.SHARP_hiv),".COMET_subtypes_edited.rds"))
+
+saveRDS(COMET_subtype.published_hiv, paste0("../HIV/lanl output, ref seqs, COMET output/published/published_hiv_", nrow(COMET_subtype.published_hiv),".COMET_subtypes_edited.rds"))
+```
+
+
+
+
+
+# REGA - this is what should be used in all scripts except APS
+
+
+# Read in sequences and subtype info
+```{r}
+
+# subtypes
+#Note: COMET output is a tab-separated file with the extension .csv, which is why I'm using read.table - not read.csv
+REGA_subtype.SHARP_hiv <- read.csv("../HIV/lanl output, ref seqs, COMET output/sharp/sharp_hiv_303.all.subtypes_REGA.csv", header = TRUE) %>%
+  mutate(name = gsub("\\|.*", "", name)) %>%
+  mutate(name = gsub("_Thermo.*|_Sanger.*|_ship.*|_PRRT.*|_WGS.*|_DBS.*", "", name))
+
+```
+
+
+# Reformat subtypes
+```{r}
+reformat_REGA_subtypes <- function(REGA_file, extract_name = TRUE, HIVorHCV = "HIV"){
+  reformated_subtypes <-  REGA_file %>%
+    mutate(
+      Sequence.name = name,
+
+      #parse subtypes:
+      #unassigned = labeled unassigned or has bootstrap support <60
+      #Most possible recombinant are labeled unassigned but there are also some sequences with two subtypes listed 
+      assignment = gsub("-like", "like", assignment),
+      REGA_subtype.F = case_when(
+        grepl("CRF", assignment) ~ "recombinantCRF",
+        grepl("Check the report", assignment) ~ as.character(NA),
+        grepl("Recombinant of", assignment) ~ gsub("Recombinant of ", "", assignment) %>%
+          gsub(", ", "", .),
+        grepl("\\(", assignment) ~ str_extract(assignment, "(?<=\\().*?(?=\\))"),
+        TRUE ~ str_match(assignment, "HIV-1 Subtype ([^,]*)")[, 2] %>% as.factor()),
+      REGA_subtype2.F = case_when(
+        grepl("CRF", assignment) ~ "recombinantCRF",
+        grepl("Check the report", assignment) ~ as.character(NA),
+        grepl("Recombinant", assignment) ~ "recombinant",
+        grepl("potential recombinant", assignment) & support < 70 ~ "recombinant",
+        support < 70 ~ "low support",
+        grepl("\\(", assignment) ~ str_extract(assignment, "(?<=\\().*?(?=\\))"),
+        TRUE ~ str_match(assignment, "HIV-1 Subtype (.*)")[, 2]) %>% as.factor()) %>%
+    select(Sequence.name, assignment, REGA_subtype.F,  REGA_subtype2.F, support)
+
+    return(reformated_subtypes)
+}
+
+
+# HIV
+REGA_subtype.SHARP_hiv <- reformat_REGA_subtypes(REGA_subtype.SHARP_hiv)
+
+table(REGA_subtype.SHARP_hiv[, c("REGA_subtype.F", "assignment")], useNA = "ifany")
+table(REGA_subtype.SHARP_hiv[, c("REGA_subtype2.F", "assignment")], useNA = "ifany")
+
+
+```
+
+## save
+```{r}
+# HIV
+saveRDS(REGA_subtype.SHARP_hiv, paste0("../HIV/lanl output, ref seqs, COMET output/sharp/sharp_hiv_", nrow(REGA_subtype.SHARP_hiv),".REGA_subtypes_edited.rds"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# BACKUP
+
+
+
+#Save lists of sequences for each subtype - SHARP sequences
+```{r, eval = FALSE}
+no_recombinants_SHARP <- REGA_subtype.SHARP_hiv %>% filter(REGA_subtype.F != "recombinant" & !is.na(REGA_subtype.F))
+write.table(no_recombinants_SHARP$Sequence.name, paste0("../HIV/ptid_lists/hiv_sharp_norecombinant_", nrow(no_recombinants_SHARP), ".ptids.txt"), row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+A1_SHARP <- REGA_subtype.SHARP_hiv %>% filter(REGA_subtype.F == "A1")
+write.table(A1_SHARP$Sequence.name, paste0("../HIV/ptid_lists/hiv_sharp_A1_", nrow(A1_SHARP), ".ptids.txt"), row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+C_SHARP <- REGA_subtype.SHARP_hiv %>% filter(REGA_subtype.F == "C")
+write.table(C_SHARP$Sequence.name, paste0("../HIV/ptid_lists/hiv_sharp_C_", nrow(C_SHARP), ".ptids.txt"), row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+D_SHARP <- REGA_subtype.SHARP_hiv %>% filter(REGA_subtype.F == "D")
+write.table(D_SHARP$Sequence.name, paste0("../HIV/ptid_lists/hiv_sharp_D_", nrow(D_SHARP), ".ptids.txt"), row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+# Extract subsets of fasta file based on geneotpes
+## Note: this results in fasta files from the alignment developed using the larger sequence list. It might be preferable to develop fasta files of the full sequences and then re-develop alignments using just the smaller set?
+```
+
+
+
+```{r, eval = FALSE}
+
+#FUNCTION to extract and save fasta and names list
+save_new_fasta <-
+  function(fasta_file, dataframe,
+           filter_column = "REGA_subtype.F", filter_criteria, out) {
+    #note that column gets passed as a string
+    #filter_criteria is a string to match in the filter column
+    #out is the file path and name to save
+    indexes_to_keep <- dataframe[, filter_column] == filter_criteria &  !(dataframe$long_name %in% excluded_seqs)
+    names_to_keep <- dataframe[indexes_to_keep, "long_name"]
+    fasta_file_subset <-
+      fasta_file[names(fasta_file) %in% names_to_keep]
+    write.fasta(sequences = fasta_file_subset, names = names(fasta_file_subset), paste0(out, "_", length(fasta_file_subset), ".fasta"))
+    
+    #Also save a vector of ptids that are included in the fasta file (formated to match SHARP metadata)
+    names_to_keep2 <- names_to_keep %>%
+      gsub(">", "",.) %>% gsub("\\|.*", "", .) %>% gsub("_PRRT", "", .)
+    saveRDS(names_to_keep2, paste0(out, "_", length(fasta_file_subset), ".rds"))
+  }
+
+
+# SHARP
+save_new_fasta(fasta_file = hiv.fasta, dataframe = REGA_subtype.SHARP_hiv, filter_column = "REGA_subtype.F", filter_criteria = "A1", out = "../HIV/GeneiousandIQtree/post_2009/SHARP_A1/SHARP_A1")
+
+save_new_fasta(fasta_file = hiv.fasta, dataframe = REGA_subtype.SHARP_hiv, filter_column = "REGA_subtype.F", filter_criteria = "C", out = "../HIV/GeneiousandIQtree/post_2009/SHARP_C/SHARP_C")
+
+save_new_fasta(fasta_file = hiv.fasta, dataframe = REGA_subtype.SHARP_hiv, filter_column = "REGA_subtype.F", filter_criteria = "D", out = "../HIV/GeneiousandIQtree/post_2009/SHARP_D/SHARP_D")
+
+```
+
+
+

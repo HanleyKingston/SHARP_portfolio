@@ -1,0 +1,482 @@
+---
+title: "discrete_trait_analysis_summaries"
+output: html_document
+date: "2023-04-18"
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(knitr)
+library(kableExtra)
+
+library(table1)
+library(dplyr)
+library(tidyr)
+
+library(ggplot2)
+library(ggpubr)
+library(magrittr)
+
+library(ape)
+library(ggtree)
+library(phangorn)
+
+library(arsenal)
+library(officer)
+
+# Set file paths - if knitting, save in a folder by date
+if (knitr::is_html_output()) {
+  save_path <- paste0("../results/regional trends/", format(Sys.Date(), "%b%d_%Y"), "/")
+} else {
+  save_path <- "../results/regional trends/"
+}
+```
+Info on phangorn package:   <https://academic.oup.com/bioinformatics/article/27/4/592/198887?login=false>  
+<https://cran.r-project.org/web/packages/phangorn/phangorn.pdf>  
+<br><br>
+
+
+
+# Read in data
+### metadata
+```{r metadata}
+data.hiv <- readRDS("../metadata/participants.rds") %>% filter(HIV_seq_available == "Yes" & !is.na(sampling_year.F)) # metadata for all sequences
+data.SHARP_hiv <- readRDS("../metadata/participants.SHARP_hiv.rds") # metadata for SHARP HIV sequences
+SHARP_seq_names <- data.SHARP_hiv$annotated_name
+```
+TO DO: find a clearer way to filter participant data to only seqs (ideally, this should be done in the metadata script)
+
+### tree data
+```{r tree data}
+# SHARP only
+tree.SHARP_hiv <- readRDS("../HIV/tree.SHARP_hiv.rds") #tree data object
+tree.SHARP_hiv <- root(tree.SHARP_hiv, "D.2019.PWID.Nairobi.Male.OQ299352.SP222") #root at a random sequence for now
+tree.SHARP_hiv.meta <- tree.SHARP_hiv.meta <- readRDS("../HIV/meta_tree.SHARP_hiv.rds") #metadata with info about tree 
+# SHARP and published
+tree.hiv <- readRDS("../HIV/tree.hiv.A1.rds") #tree data object
+tree.hiv <- root(tree.hiv, "A1.2019.PWID.Nairobi.Male.OQ299131.SP001") #root at a random sequence for now  - did not work (why?) 
+tree.hiv.meta <- readRDS("../HIV/meta_tree.hiv.A1.rds") #metadata with info about tree 
+```  
+
+
+
+<br><br><br>
+
+# DATA SUMMARY
+
+
+### Subtype by study
+Counts of available seqs by study
+```{r}
+data.hiv %>% select(source, hiv_subtype.F) %>% table(useNA = "ifany") #USE ME
+
+data.hiv %>% select(source, hiv_subtype2.F) %>% table(useNA = "ifany")
+```
+
+TO DO: check this  
+
+
+
+### Table 1
+```{r Table 1}
+library("arsenal")
+
+# Fix and addsome variables (should be in the data cleaning script)
+#fix skip pattern for active injector variable
+data.SHARP_hiv <- data.SHARP_hiv %>% mutate(
+  activeinjector.F = case_when(everuseddrugs == 0  ~ "No",
+                  TRUE ~ activeinjector.F) #People who don't use drugs are NA because of skip pattern, but should have been "No"
+  )
+#fix skip pattern for share_needles variable
+data.SHARP_hiv <- data.SHARP_hiv %>% mutate(
+  shareneedles.F = case_when(everuseddrugs == 0  ~ "have not injected in the last month",
+                  TRUE ~ shareneedles.F) #People who don't use drugs are NA because of skip pattern, but should have been "No"
+  )
+
+#add a time since diagnosis variable that excludes those not previously diagnosed
+data.SHARP_hiv <- data.SHARP_hiv  %>%
+  mutate(years_since_HIV_diagnosis2 = case_when(
+    hivtestbeforepositive == "No" ~ as.numeric(NA),
+    TRUE ~ years_since_HIV_diagnosis
+  )) #Make a variable for years since first diagnosis that is NA for anyone diangosed at enrolement 
+
+
+# Table 1 controls
+
+tableby_controls <- tableby.control(
+    numeric.stats = c("Nmiss", "meansd", "medianq1q3"),
+    cat.stats = c("Nmiss", "countpct"),
+    digits = 1,
+    digits.pct = 1)
+
+
+# By region (SHARP)
+#Seperate rcdmoneysex.MF varaible into 2 varaibles by sex (that way we can get seperate p-values)
+data.SHARP_hiv <- data.SHARP_hiv %>%
+  mutate(
+    rcdmoneysex.M = case_when(
+      is.na(rcdmoneysex.MF) ~ as.character(NA),
+      rcdmoneysex.MF == "F_No" | rcdmoneysex.MF == "F_Yes" ~ as.character(NA),
+      rcdmoneysex.MF == "M_No" ~ "No",
+      rcdmoneysex.MF == "M_Yes" ~ "Yes"),
+    rcdmoneysex.F = case_when(
+      is.na(rcdmoneysex.MF) ~ as.character(NA),
+      rcdmoneysex.MF == "M_No" | rcdmoneysex.MF == "M_Yes" ~ as.character(NA),
+      rcdmoneysex.MF == "F_No" ~ "No",
+      rcdmoneysex.MF == "F_Yes" ~ "Yes")
+    )
+
+table1_regional_trends.SHARP_hiv <- tableby(region.CN ~
+    hiv_status_final +
+    hivtestbeforepositive +
+    years_since_HIV_diagnosis +
+    years_since_HIV_diagnosis2 + 
+    hcvresults_final +
+    hiv_subtype.F +
+    hiv_subtype2.F +
+    sex +
+    rcdmoneysex.M +
+    rcdmoneysex.F +
+    everinjecteddrugs +
+    activeinjector.F +
+    shareneedles.F +
+    sex_partners_3mo.cat +
+    risk2.F +
+    risk4.F +
+    barriertransportation + 
+    stablehousing + 
+    sleeppastmonth.F +
+    sevennightsawaynairobi,
+  data = data.SHARP_hiv,
+  control = tableby_controls
+)
+
+summary(table1_regional_trends.SHARP_hiv)
+
+setwd(save_path) #This only changes the working directory within the chunk - necessary because write2Word does not accept a file path
+write2word(table1_regional_trends.SHARP_hiv, "region_SHARP_table_1.hiv.doc")
+
+
+
+
+# By region (all)
+
+table1_regional_trends.hiv <- tableby(region ~
+    source +
+    sampling_year.cat +
+    risk2.F +
+    risk4.F +
+    region +
+    hiv_subtype.F +
+    hiv_subtype2.F +
+    sex,
+  data = data.hiv,
+  control = tableby_controls
+)
+
+summary(table1_regional_trends.hiv)
+
+write2word(table1_regional_trends.hiv, "region_table_1.hiv.doc")
+
+
+
+# By region (Coast and Nairobi only)
+
+table1_regional_trends.hiv.CN <- tableby(region ~
+    source +
+    sampling_year.cat +
+    risk2.F +
+    risk4.F +
+    region +
+    hiv_subtype.F +
+    hiv_subtype2.F +
+    sex,
+  data = data.hiv[!is.na(data.hiv$region.CN),],
+  control = tableby_controls
+)
+
+summary(table1_regional_trends.hiv.CN)
+
+write2word(table1_regional_trends.hiv.CN, "region_table_1.hiv.CN.doc")
+
+
+
+
+# By risk group (all)
+
+#Table 1 - HIV
+table1_risk_trends.hiv <- tableby(risk4.F ~
+    source +
+    sampling_year.cat + 
+    region +
+    hiv_subtype.F +
+    hiv_subtype2.F +
+    sex,
+  data = data.hiv,
+  control = tableby_controls
+)
+
+summary(table1_risk_trends.hiv)
+
+write2word(summary(table1_risk_trends.hiv), "risk_table_1.hiv.doc")
+
+
+# By risk group (coast and Nairobi only)
+
+#Table 1 - HIV
+table1_risk_trends.hiv.CN <- tableby(risk4.F ~
+    source +
+    sampling_year.cat + 
+    region +
+    hiv_subtype2.F +
+    sex,
+  data = data.hiv[!is.na(data.hiv$region.CN),],
+  control = tableby_controls
+)
+
+summary(table1_risk_trends.hiv.CN)
+
+write2word(summary(table1_risk_trends.hiv.CN), "risk_table_1.hiv.CN.doc")
+
+
+# By sampling_year (all)
+
+#Table 1 - HIV
+table1_year_trends.hiv <- tableby(sampling_year.cat ~
+    risk2.F +
+    source +
+    region +
+    hiv_subtype.F +
+    hiv_subtype2.F +
+    sex,
+  data = data.hiv,
+  control = tableby_controls
+)
+
+summary(table1_year_trends.hiv)
+
+write2word(table1_year_trends.hiv, "year_table_1.hiv.doc")
+
+
+setwd("../../scripts/") #reset working directory just in case
+
+
+```
+
+TO DO: confirm what test is used to get p-value  
+TO DO: generate "years_since_first_hiv_diagnosis2" in data cleaning script and fix everinjecteddrugs variable (to be no and not NA if they never used drugs) in the data cleaning script  
+
+# Other summary
+```{r}
+# Confirm participants who are NA for ever injecting drugs are partners and not included in PWID data - correct
+data.SHARP_hiv %>%
+  filter(is.na(everinjecteddrugs.F)) %>%
+  select(everuseddrugs, everinjecteddrugs, everinjecteddrugs.F, index_or_partner.F, partner_type_comb.F, partner_type, MSM.F, FSW.F, PWID.F, PWID_region.comb) %>% View()
+
+
+
+# How many participants were known pos?
+#Among all SHARP participants living with HIV
+data.SHARP_hiv %>% select(hivtestbeforepositive, index_or_partner.F) %>% table(useNA = "ifany")
+#AMong SHAPR participants with seqs
+data.SHARP_hiv %>% select(hivtestbeforepositive, index_or_partner.F) %>% table(useNA = "ifany")
+
+
+
+#Year range for each population group (published data)
+data.hiv %>% filter((hiv_subtype.F == "A1" | hiv_subtype.F == "C" | hiv_subtype.F == "D") &
+                      !is.na(region.CN) & source == "published") %>% group_by(risk4.F) %>%
+  summarise(range = range(sampling_year.F), n = n())
+
+data.hiv %>% filter((hiv_subtype.F == "A1" | hiv_subtype.F == "C" | hiv_subtype.F == "D") &
+                      !is.na(region.CN) & source == "published") %>% select(sampling_year.cat) %>% table(useNA = "ifany")
+
+
+#Distribution of population groups in SHARP data after removing recombinant sequences
+data.hiv %>% filter((hiv_subtype.F == "A1" | hiv_subtype.F == "C" | hiv_subtype.F == "D") & source == "SHARP") %>%
+  select(risk2.F) %>% table()
+
+```
+
+
+<br><br>
+
+
+### Associations 
+Not using - decided to just use the chi-sq test implemented in Arsenal (above)  
+Note: all variables must be factors for this to work  
+```{r Regression on region}
+#factor barriertransportation variable
+data.SHARP_hiv$barriertransportation.F = factor(data.SHARP_hiv$barriertransportation, levels = c("No", "Yes"))
+#drop B subtype from data.SHARP_hiv because there are no B usbtypes in this data, so this causes an error
+data.SHARP_hiv$hiv_COMET_subtype.F <- droplevels(data.SHARP_hiv$hiv_COMET_subtype.F)
+
+# Implement regression and add to a table
+traits <- c("hiv_COMET_subtype.F", "everinjecteddrugs.F", "shareneedles.F", "sex_partners_3mo.cat", "risk2.F", "barriertransportation.F")
+
+regression.df <- data.frame()
+
+for(variable in traits){
+  print(variable)
+  formula <- as.formula(paste0("region.CN ~ ", variable))
+  variable2 <- data.SHARP_hiv[,variable, drop=TRUE]
+  my_glm <- glm(formula, data = data.SHARP_hiv, family = "binomial")
+  OR <- exp(coef(my_glm))[2:length(coef(my_glm))]
+  CI_2.5 <- exp(confint(my_glm))[,1][2:length(coef(my_glm))]
+  CI_97.5 <- exp(confint(my_glm))[,2][2:length(coef(my_glm))]
+  signif <- ifelse((CI_2.5 > 1 & CI_97.5 > 1) | (CI_2.5 < 1 & CI_97.5 < 1), "*", "")
+  effect <- paste0(round(OR,2), " (", round(CI_2.5, 2), "-", round(CI_97.5,2), ")", signif)
+  
+  if(!(is.factor(variable2) | is.numeric(variable2))){
+    print("varaibles must be either numeric or factors")
+    break()
+  }
+  
+  if(is.factor(variable2)){
+    total <- sum(!is.na(variable2))
+    count <- table(variable2)
+    percent <- paste0(round(100*count/total, 1), "%")
+    proportion <- paste0(count, " (", percent, ")")
+    
+    count_Coast <- table(data.SHARP_hiv[,variable, drop = TRUE], data.SHARP_hiv$region.CN)[,2]
+    count_Nairobi <- table(data.SHARP_hiv[,variable, drop = TRUE], data.SHARP_hiv$region.CN)[,1]
+    odds_CoastvNairobi <- round(count_Coast/count_Nairobi, 2)
+    odds <- paste0(count_Coast, "/", count_Nairobi, " = ", odds_CoastvNairobi)
+    
+    variable_name <- ifelse(is.null(label(variable2)), "?", label(variable2))
+    
+    regression.row <- data.frame(variable =  c(variable_name, rep("", length(levels(variable2))-1)), #Note: levels only works with factors
+                                 values = levels(variable2),
+                                 mean_or_proportion = proportion,
+                                 odds_CoastvsNairobi = odds,
+                                 OR = rep("-", length(levels(variable2))))
+    effect <- append("Ref", effect)
+    
+  } else {
+    mean <- round(mean(variable2, na.rm = TRUE), 2)
+    
+    regression.row <- data.frame(variable = label(variable2),
+                                 values = "-",
+                                 mean_or_proportion = mean,
+                                 odds_CoastvsNairobi = "-",
+                                 OR = "-")
+  }
+  
+  regression.row$OR <- effect
+  regression.df <- rbind(regression.df, regression.row)
+}
+
+write.csv(regression.df, "save_pathregression.csv")
+```
+
+To do: check warnings. I believe these are all indicating low counts in the regression. I will exclude these from the table after the fact but need to verify  
+TO DO: remove ste tp factorize barriertransportation and region.CN variable - this should be done in the clean_metadata script
+
+
+<br><br><br><br>
+
+# TREE VISUALIZATION by region  
+
+## SHARP only
+```{r plot region on SHARP tree, fig.height=30, fig.width=10}
+
+# find node between A1 and C subtypes in order to rotate tree
+ggtree(tree.SHARP_hiv)  + geom_text(aes(label=node), color = "red", size = 2, hjust = 1) 
+
+
+
+#re-extract metadata (because I want to add the sharing needles variable) (ideally, this would be done in the combine_tree_and_metadata cleaning script)
+variables <- c("ptid", "Sequence.name", "annotated_name", "tree_seq_name", "source", "index_or_partner.F", "index_ptid", "index_ptids.F", "partner_type_comb.F", "sex", "age", "enrollment_date", "sampling_year.F", "region", "region.CN", "rcdmoneysex", "everinjecteddrugs", "hiv_status_final.F", "hcvresults_final", "hiv_subtype.F", "hiv_subtype2.F", "risk", "risk2.F", "risk3.F", "risk4.F", "PWID_region.comb", "HET.F", "MSM.F", "FSW.F", "PWID.F", "hiv_vl", "shipment", "shareneedles", "activeinjector.F", "REGA_subtype.F", "REGA_subtype2.F")
+tree.SHARP_hiv.tibble <- as_tibble(tree.SHARP_hiv)
+tree.SHARP_hiv.meta <- left_join(tree.SHARP_hiv.tibble, data.SHARP_hiv[, variables], by = c("label" = "annotated_name"))
+
+
+#Add identified for whether a "possible FSW" and whether shared needles
+tree.SHARP_hiv.meta <- tree.SHARP_hiv.meta %>%
+  mutate(possibleFSW.label = ifelse (risk2.F == "FSW_PWID", "*", ""),
+         MSM.label = ifelse(risk2.F == "MSM_PWID", " *", ""),
+         HET.label = ifelse(risk2.F == "HET" | risk2.F == "MSM" | risk2.F == "FSW", "  *", ""), #Note: decided not to include
+         share_needles.label = ifelse (shareneedles == "Yes", "   *", ""))
+
+
+# By region and risk
+tree.SHARP_hiv <- root.tree(tree.SHARP_hiv)
+
+tree.SHARP_hiv.meta  <-tree.SHARP_hiv.meta %>%
+  mutate(REGA_subtype2.F = case_when(
+    is.na(REGA_subtype2.F) & !is.na(source) ~ as.factor("recombinant"),
+    !is.na(source) ~ as.factor(REGA_subtype2.F),
+    TRUE ~ as.factor(REGA_subtype2.F))) #I think the missing values were recombinants - needs checking what happened here
+
+region.SHARP_hiv.tree <- ggtree(tree.SHARP_hiv) %>% rotate(343) %<+% tree.SHARP_hiv.meta +
+  geom_tippoint(aes(color = region.CN, shape = REGA_subtype2.F), size = 2) +
+  scale_color_manual(values = c("forestgreen",  "deepskyblue"), labels = c("Coast", "Nairobi"), name = "Region") +
+  scale_shape_manual(values = c("AE" = 14, "A1" = 15, "A2" = 7, "C" = 16, "Clike" = 13, "D" = 17,
+                                "G" = 18, "recombinant" =6, "recombinantCRF" = 5),
+                     labels = c("AE" = "AE", "A1" = "A1", "A2" = "A2", "C" = "C", "Clike" = "C-like", "D" = "D",
+                                "G" = "G", "recombinant" = "recombinant", "recombinantCRF" = "recombinant CRF"),
+                      name = "Subtype") + 
+  geom_tiplab(aes(label = possibleFSW.label), color = "red", size = 10, nudge_y = -1.1) +
+  geom_tiplab(aes(label = MSM.label), color = "yellow4", size = 10, nudge_y = -1.1) +
+  geom_tiplab(aes(label = share_needles.label), color = "black", size = 10, nudge_y = -1.1) +
+  theme(legend.text=element_text(size=15), legend.title=element_text(size=20)) +
+  geom_treescale() 
+region.SHARP_hiv.tree
+ggsave(region.SHARP_hiv.tree, file = paste0(save_path, "region.SHARP_hiv.png"), width = 10, height = 10.5, units = "in") #CAUTION: For some reason ggsave is failing to print any points of a non-solid share. Bypass this by savign directly from the plot sindow
+
+
+# By region and subtype
+geneotypeXregion.SHARP_hiv.tree <- ggtree(tree.SHARP_hiv) %<+% tree.SHARP_hiv.meta +
+  geom_tippoint(aes(colour = region.CN, shape = region.CN, fill = REGA_subtype2.F), stroke = 1.3) + 
+  geom_treescale() +
+  scale_colour_manual(values = c("deepskyblue", 000000, "black")) +
+  scale_shape_manual(values = c(22,21,24)) +
+  #There is a bug for the interaction between fill and scale_shap_manual - this is a fix to make the legend work
+  guides(fill = guide_legend(override.aes=list(shape=c(21))),
+         shape = guide_legend(override.aes=list(fill = "forestgreen")))
+
+geneotypeXregion.SHARP_hiv.tree
+ggsave(geneotypeXregion.SHARP_hiv.tree, file = "save_pathgeneotypeXregion.SHARP_hiv.png", width = 7, height = 10.5, units = "in")
+```
+
+## SHARP and published seqs
+```{r plot region on SHARP and published tree, fig.height=60, fig.width=10, eval = FALSE}
+tree.hiv.meta$source <- ifelse(is.na(tree.hiv.meta$source), "internal", tree.hiv.meta$source) #this is a workaround because otherwise the internal lines are removed when adding linetype as an aesthetic
+  
+geneotypeXregion.hiv.tree <- ggtree(tree.hiv, aes(linetype = source)) %<+% tree.hiv.meta +
+  geom_tippoint(aes(color = region.CN, shape = region.CN, fill = hiv_subtype.F)) +
+  scale_colour_manual(values = c("darkviolet", 000000, "black")) +
+  scale_linetype_manual(values = c("solid", "dashed", "solid", "dotted")) +
+  scale_shape_manual(values = c(22,21,24)) +
+  #There is a bug for the interaction between fill and scale_shap_manual - this is a fix to make the legend work (however, important to doublecheck the scale is right because now it won't automatically match):
+  guides(fill = guide_legend(override.aes=list(shape=c(21))),
+         shape = guide_legend(override.aes=list(fill = "#7CAE00")))
+
+geneotypeXregion.hiv.tree
+ggsave(geneotypeXregion.hiv.tree, file = paste0(save_path, "geneotypeXregion.hiv.png"), width = 12, height = 30, units = "in")
+```  
+
+### Region - CN only
+```{r plot region on SHARP and published tree, fig.height=60, fig.width=10}
+region.CN.hiv.tree <- ggtree(tree.hiv) %<+% tree.hiv.meta +
+  geom_tippoint(aes(colour = region.CN), stroke = 1.3) +
+  geom_treescale() +
+  scale_color_manual(values = c("purple4", "yellow2")) 
+
+region.CN.hiv.tree
+ggsave(region.CN.hiv.tree, file = paste0(save_path, "region.CN.hiv.tree.hiv.png"), width = 12, height = 30, units = "in")
+``` 
+
+
+### Risk
+```{r plot region on SHARP and published tree, fig.height=60, fig.width=10}
+risk.CN.hiv.tree <- ggtree(tree.hiv, aes(linetype = source)) %<+% tree.hiv.meta +
+  scale_linetype_manual(values = c("solid", "dashed", "dotted")) +
+  geom_tippoint(aes(colour = risk3.F), stroke = 1.3) +
+  geom_treescale()
+
+risk.hiv.tree
+ggsave(risk.CN.hiv.tree, file = paste0(save_path, "risk.CN.hiv.tree.hiv.png"), width = 12, height = 30, units = "in")
+``` 
+

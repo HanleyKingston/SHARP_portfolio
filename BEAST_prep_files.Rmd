@@ -1,0 +1,760 @@
+---
+title: "BEAST_prep_files"
+author: "Hanley"
+date: "4/4/2023"
+output: html_document
+---
+
+# 1. RUN filter_hiv_published_sequences.Rmd
+# 2. DEVELOP ALIGNMENTS IN GENEIOUS
+
+# 3. CHANGE FASTA SEQUENCE IDS TO ANNOTATED NAMES
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(ape)
+library(phangorn)
+library(seqinr)
+```
+
+
+### 3.1 Load data
+
+# Load metadata
+```{r}
+meta_data <- readRDS("../metadata/participants.rds") %>% # metadata for all sequences
+  filter(HIV_seq_available == "Yes")
+```
+
+# Load seq lists
+seqs included in alignment in Geneious
+```{r}
+SHARP_and_published_ptids_post2000_CN <- scan("../HIV/ptid_lists/hiv_2679_SHARP_and_published V5.ptids.tsv", character(), sep = "\t")  %>%
+  gsub("\\|.*", "", .) %>% gsub("_PRRT", "",.) 
+
+SHARP_and_published_ptids_post2000_Kenya <- scan("../HIV/ptid_lists/hiv_4065_SHARP_and_published V4.ptids.txt", character())  %>%
+  gsub("\\|.*", "", .) %>% gsub("_PRRT", "",.) 
+```
+
+# Check for missing values
+```{r}
+meta_data %>%
+  select("risk2.F", "risk3.F", "risk4.F", "source", "region.CN", "sampling_year.cat") %>%
+  apply(2, table, useNA = "ifany")
+```
+
+
+## 3.2 Read fasta files (dropping appendices from SHARP ptids)
+```{r}
+# SHARP only
+SHARP.fasta <- read.fasta("../HIV/GeneiousandIQtree/SHARP_only/all_subtypes/sharp_hiv_303.all.Doutgroup.fasta")
+names(SHARP.fasta) <- gsub("\\|.*", "", names(SHARP.fasta)) #drop appendices from SHARP seq names
+names(SHARP.fasta) <- gsub("_.*", "", names(SHARP.fasta))
+SHARP.fasta <- SHARP.fasta[!(grepl("D\\.UG|D\\.TZ", names(SHARP.fasta)))] #Drop UG and TZ ref seqs
+
+# SHARP and published
+SHARP_and_published_Kenya.fasta <- read.fasta("../HIV/GeneiousandIQtree/SHARP_and_published/all_subtypes/hiv_4065_SHARP_and_published_V4.fasta") #actually 4080 seqs because includes refs from UG and TZ
+names(SHARP_and_published_Kenya.fasta) <- gsub("\\|.*", "", names(SHARP_and_published_Kenya.fasta)) #drop appendices from SHARP seq names
+names(SHARP_and_published_Kenya.fasta) <- gsub("_.*", "", names(SHARP_and_published_Kenya.fasta))
+SHARP_and_published_Kenya.fasta <- SHARP_and_published_Kenya.fasta[!(grepl("D\\.UG|D\\.TZ", names(SHARP_and_published_Kenya.fasta)))] #Drop UG and TZ ref seqs
+
+# Drop sequences with no sampling_year
+
+```
+
+
+
+## 3.3 Rename Seqs
+```{r}
+
+## SHARP
+names(SHARP.fasta) <- meta_data$annotated_name[match(names(SHARP.fasta), meta_data$tree_seq_name)]
+write.fasta(SHARP.fasta, names(SHARP.fasta),
+            paste0("../HIV/GeneiousandIQtree/SHARP_only/all_subtypes/hiv_", length(SHARP.fasta), "_SHARP_annotated_names.fasta"))
+
+## SHARP and published
+all(names(SHARP_and_published_Kenya.fasta) %in% meta_data$tree_seq_name) # Check - should be true
+names(SHARP_and_published_Kenya.fasta) <- meta_data$annotated_name[match(names(SHARP_and_published_Kenya.fasta), meta_data$tree_seq_name)]
+any(is.na(names(SHARP_and_published_Kenya.fasta))) #check - should be false
+write.fasta(SHARP_and_published_Kenya.fasta, names(SHARP_and_published_Kenya.fasta),
+            paste0("../HIV/GeneiousandIQtree/SHARP_and_published/all_subtypes/hiv_", length(SHARP_and_published_Kenya.fasta), "_SHARP_and_published_V4_annotated_names.fasta"))
+
+```
+
+# 4. FILTER ALIGNMENTS 
+
+### 4.1 Drop seqeucnes with no date values
+```{r}
+no_date_seqs <- meta_data %>% filter(is.na(sampling_year.F)) %>%
+  pull(annotated_name)
+length(no_date_seqs)
+
+all(no_date_seqs %in% names(SHARP_and_published_Kenya.fasta))
+SHARP_and_published_Kenya.fasta <- SHARP_and_published_Kenya.fasta[!(names(SHARP_and_published_Kenya.fasta) %in% no_date_seqs)]
+```
+
+
+
+## 4.2 Extract and save ptid lists
+```{r}
+
+# SHARP only
+
+## SHARP only
+length(names(SHARP.fasta))
+write.table(names(SHARP.fasta), "../HIV/ptid_lists/hiv_303_SHARP.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+
+## SHARP only - A1
+SHARP_A1 <- meta_data %>%
+  filter(annotated_name %in% names(SHARP.fasta) & hiv_subtype.F == "A1") %T>%
+  {print(nrow(.))} %>%
+  pull(annotated_name)
+write.table(SHARP_A1, "../HIV/ptid_lists/hiv_196_SHARP_A1.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+
+
+# SHARP and published - Coast and Nairobi only
+
+## SHARP and published - Coast and Nairobi only - all subtypes
+SHARP_and_published_CN <- meta_data %>%
+  filter(annotated_name %in% names(SHARP_and_published_Kenya.fasta) & !is.na(region.CN)) %T>%
+  {print(nrow(.))} %>%
+  pull(annotated_name)
+write.table(names(SHARP_and_published_Kenya.fasta), "../HIV/ptid_lists/hiv_2666_SHARP_and_published_CN.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+## SHARP and published - Coast and Nairobi only - A1
+SHARP_and_published_CN_A1 <- meta_data %>%
+  filter(annotated_name %in% names(SHARP_and_published_Kenya.fasta) &
+          !is.na(region.CN) &
+           hiv_subtype.F == "A1") %T>%
+  {print(nrow(.))} %>%
+  pull(annotated_name)
+write.table(SHARP_and_published_CN_A1, "../HIV/ptid_lists/hiv_1885_SHARP_and_published_CN_A1.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+
+
+# SHARP and published - all regions
+
+## SHARP and published - all regions - all subtypes
+length(names(SHARP_and_published_Kenya.fasta))
+write.table(names(SHARP_and_published_Kenya.fasta), "../HIV/ptid_lists/hiv_4065_SHARP_and_published_post2000_Kenya.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+## SHARP and published - all regions - A1
+SHARP_and_published_Kenya_A1 <- meta_data %>%
+  filter(annotated_name %in% names(SHARP_and_published_Kenya.fasta) & hiv_subtype.F == "A1") %T>%
+  {print(nrow(.))} %>%
+  pull(annotated_name)
+write.table(SHARP_and_published_Kenya_A1, "../HIV/ptid_lists/hiv_2846_SHARP_and_published_post2000_Kenya_A1.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+## SHARP and published - all regions - C
+SHARP_and_published_Kenya_C <- meta_data %>%
+  filter(annotated_name %in% names(SHARP_and_published_Kenya.fasta) & hiv_subtype.F == "C") %T>%
+  {print(nrow(.))} %>%
+  pull(annotated_name)
+write.table(SHARP_and_published_Kenya_C, "../HIV/ptid_lists/hiv_307_SHARP_and_published_Kenya_C.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+## SHARP and published - all regions - D
+SHARP_and_published_Kenya_D <- meta_data %>%
+  filter(annotated_name %in% names(SHARP_and_published_Kenya.fasta) & hiv_subtype.F == "D") %T>%
+  {print(nrow(.))} %>%
+  pull(annotated_name)
+write.table(SHARP_and_published_Kenya_D, "../HIV/ptid_lists/hiv_455_SHARP_and_published_post2000_Kenya_D.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+```
+
+
+### 4.3 Extract and save subtype-specific fasta files based on ptid lists
+(Save all fasta files with annotated_names)
+```{r}
+
+# SHARP
+write.fasta(SHARP.fasta, names(SHARP.fasta), 
+            paste0("../HIV/GeneiousandIQtree/SHARP_only/all_subtypes/hiv_", length(SHARP.fasta), "_SHARP_annotated_names.fasta"))
+
+SHARP.fasta.A1 <- SHARP.fasta[SHARP_A1]
+write.fasta(SHARP.fasta.A1, names(SHARP.fasta.A1),
+            paste0("../HIV/GeneiousandIQtree/SHARP_only/A1/hiv_", length(SHARP.fasta.A1), "_SHARP_A1_annotated_names.fasta"))
+
+
+# SHARP and published - Coast and Nairobi only
+SHARP_and_published_CN.fasta <- SHARP_and_published_Kenya.fasta[SHARP_and_published_CN]
+write.fasta(SHARP_and_published_CN.fasta , names(SHARP_and_published_CN.fasta),
+            paste0("../HIV/GeneiousandIQtree/SHARP_and_published_CN_only/all_subtypes/hiv_", length(SHARP_and_published_CN.fasta), "_SHARP_annotated_names.fasta"))
+
+SHARP_and_published_CN.fasta.A1 <- SHARP_and_published_Kenya.fasta[SHARP_and_published_CN_A1]
+write.fasta(SHARP_and_published_CN.fasta.A1, names(SHARP_and_published_CN.fasta.A1),
+            paste0("../HIV/GeneiousandIQtree/SHARP_and_published_CN_only/A1/hiv_", length(SHARP_and_published_CN.fasta.A1), "_SHARP_and_published_A1_annotated_names.fasta"))
+
+
+
+# SHARP and published
+write.fasta(SHARP_and_published_Kenya.fasta, names(SHARP_and_published_Kenya.fasta),
+            paste0("../HIV/GeneiousandIQtree/SHARP_and_published/all_subtypes/hiv_", length(SHARP_and_published_Kenya.fasta), "_SHARP_and_published_annotated_names.fasta"))
+
+SHARP_and_published_Kenya.fasta.A1 <- SHARP_and_published_Kenya.fasta[SHARP_and_published_Kenya_A1]
+write.fasta(SHARP_and_published_Kenya.fasta.A1, names(SHARP_and_published_Kenya.fasta.A1),
+            paste0("../HIV/GeneiousandIQtree/SHARP_and_published/A1/hiv_", length(SHARP_and_published_Kenya.fasta.A1), "_SHARP_and_published_A1_annotated_names.fasta"))
+
+SHARP_and_published_Kenya.fasta.C <- SHARP_and_published_Kenya.fasta[SHARP_and_published_Kenya_C]
+write.fasta(SHARP_and_published_Kenya.fasta.C, names(SHARP_and_published_Kenya.fasta.C),
+            paste0("../HIV/GeneiousandIQtree/SHARP_and_published/C/hiv_", length(SHARP_and_published_Kenya.fasta.C), "_SHARP_and_published_C_annotated_names.fasta"))
+
+SHARP_and_published_Kenya.fasta.D <- SHARP_and_published_Kenya.fasta[SHARP_and_published_Kenya_D]
+write.fasta(SHARP_and_published_Kenya.fasta.D, names(SHARP_and_published_Kenya.fasta.D),
+            paste0("../HIV/GeneiousandIQtree/SHARP_and_published/D/hiv_", length(SHARP_and_published_Kenya.fasta.D), "_SHARP_and_published_D_annotated_names.fasta"))
+
+
+```
+
+
+
+
+
+
+
+
+# 5. DEVELOP TREES IN IQ TREE
+Note: did not end up making trees for the Coast-Nairobi only files (it makes more sense just to extract these from the larger tree)
+
+
+
+## 5.1 Convert trees to .newick files
+```{r}
+
+# SHARP only
+tree.SHARP_hiv <- read.tree("../HIV/GeneiousandIQtree/SHARP_only/all_subtypes/hiv_303_SHARP_.treefile")
+write.tree(tree.SHARP_hiv, "../HIV/GeneiousandIQtree/SHARP_only/all_subtypes/hiv_303_SHARP.newick")
+
+tree.SHARP_hiv.A1 <- read.tree("../HIV/GeneiousandIQtree/SHARP_only/A1/hiv_196_SHARP_A1_.treefile")
+write.tree(tree.SHARP_hiv.A1, "../HIV/GeneiousandIQtree/SHARP_only/A1/hiv_196_SHARP_A1.newick")
+
+
+# SHARP and published
+tree.SHARP_and_published_hiv <- read.tree("../HIV/GeneiousandIQtree/SHARP_and_published/all_subtypes/hiv_3890_SHARP_and_published.treefile")
+write.tree(tree.SHARP_and_published_hiv, "../HIV/GeneiousandIQtree/SHARP_and_published/all_subtypes/hiv_3890_SHARP_and_published.newick")
+
+tree.SHARP_and_published_hiv.A1 <- read.tree("../HIV/GeneiousandIQtree/SHARP_and_published/A1/hiv_2681_SHARP_and_published_A1.treefile")
+write.tree(tree.SHARP_and_published_hiv.A1, "../HIV/GeneiousandIQtree/SHARP_and_published/A1/hiv_2681_SHARP_and_published_A1.newick")
+
+tree.SHARP_and_published_hiv.C <- read.tree("../HIV/GeneiousandIQtree/SHARP_and_published/C/hiv_302_SHARP_and_published_C.treefile")
+write.tree(tree.SHARP_and_published_hiv.C, "../HIV/GeneiousandIQtree/SHARP_and_published/C/hiv_302_SHARP_and_published_C.newick")
+
+tree.SHARP_and_published_hiv.D <- read.tree("../HIV/GeneiousandIQtree/SHARP_and_published/D/hiv_450_SHARP_and_published_D.treefile")
+write.tree(tree.SHARP_and_published_hiv.D, "../HIV/GeneiousandIQtree/SHARP_and_published/D/hiv_450_SHARP_and_published_D.newick")
+```
+
+TO DO: add all subtype tree
+
+
+## 5.2 Check agreement between trees and fasta files (only works if fasta files are still loaded from step 3)
+```{r, eval = FALSE}
+# Check - should be TRUE
+all(tree.SHARP_hiv$tip.label %in% names(SHARP.fasta))
+all(tree.SHARP_hiv.A1$tip.label %in% names(SHARP.fasta.A1))
+all(tree.SHARP_and_published_hiv$tip.label %in% names(SHARP_and_published_Kenya.fasta))
+all(tree.SHARP_and_published_hiv.A1$tip.label %in% names(SHARP_and_published_Kenya.fasta.A1))
+all(tree.SHARP_and_published_hiv.C$tip.label %in% names(SHARP_and_published_Kenya.fasta.C))
+all(tree.SHARP_and_published_hiv.D$tip.label %in% names(SHARP_and_published_Kenya.fasta.D)) 
+```
+
+
+## 5.2 Save metadata for each tree
+```{r}
+#reload data
+meta_data <- readRDS("../metadata/participants.rds") %>% # metadata for all sequences
+  filter(HIV_seq_available == "Yes") %>%
+  select(annotated_name, source, sampling_year.F, risk, risk2.F, risk3.F, risk4.F, region, region.CN, region2.F, sex) 
+  
+
+
+
+# SHARP and published
+tree.SHARP_and_published_hiv <- read.tree("../HIV/GeneiousandIQtree/SHARP_and_published/all_subtypes/hiv_3890_SHARP_and_published.treefile")
+write.tree(tree.SHARP_and_published_hiv, "../HIV/GeneiousandIQtree/SHARP_and_published/all_subtypes/hiv_3890_SHARP_and_published.newick")
+
+tree.SHARP_and_published_hiv.A1 <- read.tree("../HIV/GeneiousandIQtree/SHARP_and_published/A1/hiv_2681_SHARP_and_published_A1.treefile")
+write.tree(tree.SHARP_and_published_hiv.A1, "../HIV/GeneiousandIQtree/SHARP_and_published/A1/hiv_2681_SHARP_and_published_A1.newick")
+
+tree.SHARP_and_published_hiv.C <- read.tree("../HIV/GeneiousandIQtree/SHARP_and_published/C/hiv_302_SHARP_and_published_C.treefile")
+write.tree(tree.SHARP_and_published_hiv.C, "../HIV/GeneiousandIQtree/SHARP_and_published/C/hiv_302_SHARP_and_published_C.newick")
+
+tree.SHARP_and_published_hiv.D <- read.tree("../HIV/GeneiousandIQtree/SHARP_and_published/D/hiv_450_SHARP_and_published_D.treefile")
+write.tree(tree.SHARP_and_published_hiv.D, "../HIV/GeneiousandIQtree/SHARP_and_published/D/hiv_450_SHARP_and_published_D.newick")
+
+
+# Stratfiy for each tree
+
+## SHARP only
+meta_data.SHARP <- meta_data %>%
+  filter(annotated_name %in% tree.SHARP_hiv$tip.label)
+write.table(meta_data.SHARP, "../HIV/GeneiousandIQtree/SHARP_only/all_subtypes/metadata_hiv_SHARP.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+
+## SHARP only
+meta_data.SHARP.A1 <- meta_data %>%
+  filter(annotated_name %in% tree.SHARP_hiv.A1$tip.label)
+write.table(meta_data.SHARP.A1, "../HIV/GeneiousandIQtree/SHARP_only/A1/metadata_hiv_SHARP.A1.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+
+
+
+## SHARP and published
+meta_data.SHARP_and_published <- meta_data %>%
+  filter(annotated_name %in% tree.SHARP_and_published_hiv$tip.label)
+write.table(meta_data.SHARP_and_published, "../HIV/GeneiousandIQtree/SHARP_and_published/all_subtypes/metadata_hiv_SHARP_and_published.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+
+meta_data.SHARP_and_published.A1 <- meta_data %>%
+  filter(annotated_name %in% tree.SHARP_and_published_hiv.A1$tip.label)
+write.table(meta_data.SHARP_and_published.A1, "../HIV/GeneiousandIQtree/SHARP_and_published/A1/metadata_hiv_SHARP_and_published.A1.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+
+meta_data.SHARP_and_published.C <- meta_data %>%
+  filter(annotated_name %in% tree.SHARP_and_published_hiv.C$tip.label)
+write.table(meta_data.SHARP_and_published.C, "../HIV/GeneiousandIQtree/SHARP_and_published/C/metadata_hiv_SHARP_and_published.C.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+
+meta_data.SHARP_and_published.D <- meta_data %>%
+  filter(annotated_name %in% tree.SHARP_and_published_hiv.D$tip.label)
+write.table(meta_data.SHARP_and_published.D, "../HIV/GeneiousandIQtree/SHARP_and_published/D/metadata_hiv_SHARP_and_published.D.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+
+
+
+
+
+# 6. Visualize subtype clades
+
+
+### Visualze Subtype clades
+```{r}
+SHARP_and_published_hiv.tibble <- as_tibble(tree.SHARP_and_published_hiv)
+SHARP_and_published_hiv.meta <- right_join(SHARP_and_published_hiv.tibble, meta_data, by = c("label" = "tree_seq_name"))
+
+SHARP_and_published_Kenya_subtypexsource.tree <- ggtree(tree.SHARP_and_published_hiv) %<+%
+  SHARP_and_published_hiv.meta +
+  geom_treescale() +
+  geom_tippoint(aes_string(colour = "hiv_subtype2.F", fill = "hiv_subtype2.F", shape = "source")) +
+  scale_shape_manual(values = c(21,3))
+SHARP_and_published_Kenya_subtypexsource.tree
+
+ggsave(SHARP_and_published_Kenya_subtypexsource.tree, file = "../HIV/SHARP_and_published_Kenya_subtypexsource.tree.png", width = 7, height = 30, units = "in")
+
+```
+
+
+
+
+
+# 7. CLUSTER ANALYSIS: see Analyze_clusters.rmd
+
+
+
+
+# 8. ASSESS CLUSTER TIME ORIGIN FOR PWID CLUSTERS
+
+### Devleop a tree using the PWID-containing clusters - see PWID_clusters_only/cluster_dates
+
+
+### Extract maximum clade credibilility tree in Tree Annotator
+see README in see PWID_clusters_only/cluster_dates  
+
+### Load tree into Geneious Prime and export as .newick  
+I also tried doing this in Figtree, but it lost he support values
+Note: This adds extra quotes to the sequences names, so we have to drop these...
+```{r}
+PWID_clust.tree <- read.tree("../HIV/BEAST_trees/A1/PIWD_clusters_only/cluster_dates/try3/hiv_A1_PWID_clusters_for_dating.(time).newick")
+
+PWID_clust.tree$tip.label <- gsub("'", "", PWID_clust.tree$tip.label)
+
+write.tree(PWID_clust.tree, "../HIV/BEAST_trees/A1/PIWD_clusters_only/cluster_dates/try3/hiv_A1_PWID_clusters_for_dating.(time).newick")
+```
+
+### Run .newick tree through ClusterPicker
+Note: .fasta file is probably under Geneious and IQtree folder
+Use bootstrap (actually posterior probability) threshold 0.9 and distance threshold 4.5%
+Move the resultant fasta file to be in the same folder (beast folders) as the tree files
+
+
+
+### Add cluster values to metadata
+```{r}
+#Read metadata
+meta_data.PWID_clust <- readRDS("../metadata/participants.rds") %>% # metadata for all sequences
+  filter(annotated_name %in% PWID_clust.tree$tip.label) %>%
+  select(annotated_name, sampling_year.F, PWID.F, risk2.F, risk4.F, region)
+nrow(meta_data.PWID_clust)
+
+#Read cluster_data
+PWID_clust <- read.table("../HIV/BEAST_trees/A1/PIWD_clusters_only/cluster_dates/try3/hiv_A1_PWID_clusters_for_dating.(time)_clusterPicks_list.txt", header = TRUE) %>%
+  filter(ClusterNumber != -1) %>%
+  rename(annotated_name = SequenceName)
+nrow(PWID_clust)
+
+meta_data.PWID_clust <- left_join(PWID_clust, meta_data.PWID_clust, by = "annotated_name")
+nrow(meta_data.PWID_clust)
+
+write.table(meta_data.PWID_clust, "../HIV/BEAST_trees/A1/PIWD_clusters_only/cluster_dates/try3/metadata_PWID_clust.A1.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+
+### Count TMRCA for PWID clusters in Figtree
+Load .tre file from tree annotator into Figtree  
+Add metadata (file->load annotations) and label by cluster. Count TMRCA for each cluster that contains a PWID seq (this should be most clusters because we only included seqs in PWID clusters based on ML tree)  
+(Be sure to increase text size for easier viewing)
+
+
+
+
+
+# 9. GET SUBSAMPLED FASTA FILES
+
+```{r}
+library(seqinr)
+library(dplyr)
+```
+
+### Read in fasta file and metadata
+```{r}
+hiv_all.fasta <- read.fasta("../HIV/GeneiousandIQtree/SHARP_and_published/all_subtypes/hiv_3890_SHARP_and_published_annotated_names.fasta")
+
+data.hiv <- readRDS("../metadata/participants.rds") # metadata for all sequences
+```
+
+### Uniform - read in seq names (use first 10 sets fom each list)
+```{r}
+#all - probably not using
+#Uniform_risk.all.seqs <- readRDS("../HIV/subsampled_seq_lists/Uniform_risk.all.seqs.list.rds")[1:10]
+#Uniform_regionrisk.all.seqs <- readRDS("../HIV/subsampled_seq_lists/Uniform_regionrisk.all.seqs.list.rds")[1:10]
+
+#A1
+#Uniform_region_SHARP.seqs <- readRDS("../HIV/subsampled_seq_lists/Uniform_region_SHARP.A1.seqs.rds") #Not doing BEAST run of SHARP only
+#Uniform_region.A1.seqs <- readRDS("../HIV/subsampled_seq_lists/Uniform_region.A1.seqs.list.rds")[1:10]
+Uniform_risk.A1.seqs.list <- readRDS("../HIV/subsampled_seq_lists/Uniform_risk.A1.seqs.list.rds")[1:10]
+Uniform_regionrisk.A1.seqs.list <- readRDS("../HIV/subsampled_seq_lists/Uniform_regionrisk.A1.seqs.list.rds")[1:10]
+
+#C
+Uniform_risk.C.seqs.list <- readRDS("../HIV/subsampled_seq_lists/Uniform_risk.C.seqs.list.rds")[1:10]
+Uniform_regionrisk.C.seqs.list <- readRDS("../HIV/subsampled_seq_lists/Uniform_regionrisk.C.seqs.list.rds")[1:10]
+
+#D
+Uniform_risk.D.seqs.list <- readRDS("../HIV/subsampled_seq_lists/Uniform_risk.D.seqs.list.rds")[1:10] #fixed from C to D (2/13/24)
+Uniform_regionrisk.D.seqs.list <- readRDS("../HIV/subsampled_seq_lists/Uniform_regionrisk.D.seqs.list.rds")[1:10] #fixed from C to D (2/13/24)
+```
+
+
+
+### Uniform - filter and save fasta files and metadata
+
+##### all (not done)
+```{r}
+
+
+```
+
+
+##### A1
+```{r}
+# uniform risk
+all(unlist(lapply(Uniform_risk.A1.seqs.list, function(X){all(X %in% names(hiv_all.fasta))})))  #Check
+all(unlist(lapply(Uniform_risk.A1.seqs.list, function(X){all(X  %in% data.hiv$annotated_name)})))  #Check
+
+#filter fasta for each subsample list
+hiv.A1.Uniform_risk.A1.fasta.list <- lapply(Uniform_risk.A1.seqs.list, function(X){hiv_all.fasta[X]}) #filter fasta
+identical(hiv.A1.Uniform_risk.A1.fasta.list[1], hiv.A1.Uniform_risk.A1.fasta.list[2]) #confirm all are different - this shoudl be false
+
+#Save each fasta seperately
+for(i in 1:10){
+  write.fasta(hiv.A1.Uniform_risk.A1.fasta.list[[i]], names(hiv.A1.Uniform_risk.A1.fasta.list[[i]]),
+              paste0("../HIV/BEAST_trees/A1/Uniform_subsampling_risk", i, "/Uniform_subsampling_risk.A1.fasta"))
+}
+
+#filter metadata for each subsample list
+data.hiv.Uniform_risk.A1.meta.list <- lapply(Uniform_risk.A1.seqs.list, function(X){
+  data.hiv %>% filter(annotated_name %in% X) %>%
+  select(annotated_name, risk2.F, risk3.F, risk4.F, source, region2.F, region.CN, sampling_year.cat)}) #filter metadata
+identical(data.hiv.Uniform_risk.A1.meta.list[1], data.hiv.Uniform_risk.A1.meta.list[2]) #confirm all are different - this should be false
+#check to confirm uniform subsampling
+all(unlist(lapply(data.hiv.Uniform_risk.A1.meta.list, function(X){length(unique(as.vector(table(X[,"risk4.F"])))) == 1})))
+
+#save each metadata seperately
+for(i in 1:10){
+  write.table(data.hiv.Uniform_risk.A1.meta.list[[i]],
+              paste0("../HIV/BEAST_trees/A1/Uniform_subsampling_risk", i, "/Uniform_subsampling_risk.A1.tsv"),
+              sep = "\t", quote = FALSE, row.names = FALSE) #save metadata
+}
+
+
+
+
+# uniform risk and region combined
+
+all(unlist(lapply(Uniform_regionrisk.A1.seqs.list, function(X){all(X %in% names(hiv_all.fasta))})))  #Check
+all(unlist(lapply(Uniform_regionrisk.A1.seqs.list, function(X){all(X  %in% data.hiv$annotated_name)})))  #Check
+
+#filter fasta for each subsample list
+hiv.A1.Uniform_regionrisk.A1.fasta.list <- lapply(Uniform_regionrisk.A1.seqs.list, function(X){hiv_all.fasta[X]}) #filter fasta
+identical(hiv.A1.Uniform_regionrisk.A1.fasta.list[1], hiv.A1.Uniform_regionrisk.A1.fasta.list[2]) #confirm all are different - this shoudl be false
+
+#Save each fasta seperately
+for(i in 1:10){
+  write.fasta(hiv.A1.Uniform_regionrisk.A1.fasta.list[[i]], names(hiv.A1.Uniform_regionrisk.A1.fasta.list[[i]]),
+              paste0("../HIV/BEAST_trees/A1/Uniform_subsampling_RiskandRegion_comb", i,
+                     "/Uniform_subsampling_regionrisk.A1.fasta"))
+}
+
+
+#filter metadata for each subsample list
+data.hiv.Uniform_regionrisk.A1.meta.list <- lapply(Uniform_regionrisk.A1.seqs.list, function(X){
+  data.hiv %>% filter(annotated_name %in% X) %>%
+  select(annotated_name, risk2.F, risk3.F, risk4.F, source, region2.F, region.CN, PWID_region.comb, sampling_year.cat)}) #filter metadata
+identical(data.hiv.Uniform_regionrisk.A1.meta.list[1],data.hiv.Uniform_regionrisk.A1.meta.list[2]) #confirm all are different - this should be false
+#check to confirm uniform subsampling
+all(unlist(lapply(data.hiv.Uniform_regionrisk.A1.meta.list, function(X){length(unique(as.vector(table(X[,"PWID_region.comb"])))) == 1})))
+
+#save each metadata seperately
+for(i in 1:10){
+  write.table(data.hiv.Uniform_regionrisk.A1.meta.list[[i]],
+              paste0("../HIV/BEAST_trees/A1/Uniform_subsampling_RiskandRegion_comb", i,
+                     "/Uniform_subsampling_regionrisk.A1.tsv"),
+              sep = "\t", quote = FALSE, row.names = FALSE) #save metadata
+}
+
+
+```
+
+##### C
+```{r}
+# uniform risk
+all(unlist(lapply(Uniform_risk.C.seqs.list, function(X){all(X %in% names(hiv_all.fasta))})))  #Check
+all(unlist(lapply(Uniform_risk.C.seqs.list, function(X){all(X  %in% data.hiv$annotated_name)})))  #Check
+
+#filter fasta for each subsample list
+hiv.C.Uniform_risk.C.fasta.list <- lapply(Uniform_risk.C.seqs.list, function(X){hiv_all.fasta[X]}) #filter fasta
+identical(hiv.C.Uniform_risk.C.fasta.list[1], hiv.C.Uniform_risk.C.fasta.list[2]) #confirm all are different - this shoudl be false
+
+#Save each fasta seperately
+for(i in 1:10){
+  write.fasta(hiv.C.Uniform_risk.C.fasta.list[[i]], names(hiv.C.Uniform_risk.C.fasta.list[[i]]),
+              paste0("../HIV/BEAST_trees/C/Uniform_subsampling_risk", i, "/Uniform_subsampling_risk.C.fasta"))
+}
+
+#filter metadata for each subsample list
+data.hiv.Uniform_risk.C.meta.list <- lapply(Uniform_risk.C.seqs.list, function(X){
+  data.hiv %>% filter(annotated_name %in% X) %>%
+  select(annotated_name, risk2.F, risk3.F, risk4.F, source, region2.F, region.CN, sampling_year.cat)}) #filter metadata
+identical(data.hiv.Uniform_risk.C.meta.list[1], data.hiv.Uniform_risk.C.meta.list[2]) #confirm all are different - this should be false
+
+#save each metadata seperately
+for(i in 1:10){
+  write.table(data.hiv.Uniform_risk.C.meta.list[[i]],
+              paste0("../HIV/BEAST_trees/C/Uniform_subsampling_risk", i, "/Uniform_subsampling_risk.C.tsv"),
+              sep = "\t", quote = FALSE, row.names = FALSE) #save metadata
+}
+
+
+
+# uniform risk and region combined
+
+all(unlist(lapply(Uniform_regionrisk.C.seqs.list, function(X){all(X %in% names(hiv_all.fasta))})))  #Check
+all(unlist(lapply(Uniform_regionrisk.C.seqs.list, function(X){all(X  %in% data.hiv$annotated_name)})))  #Check
+
+#filter fasta for each subsample list
+hiv.C.Uniform_regionrisk.C.fasta.list <- lapply(Uniform_regionrisk.C.seqs.list, function(X){hiv_all.fasta[X]}) #filter fasta
+identical(hiv.C.Uniform_regionrisk.C.fasta.list[1], hiv.C.Uniform_regionrisk.C.fasta.list[2]) #confirm all are different - this shoudl be false
+
+#Save each fasta seperately
+for(i in 1:10){
+  write.fasta(hiv.C.Uniform_regionrisk.C.fasta.list[[i]], names(hiv.C.Uniform_regionrisk.C.fasta.list[[i]]),
+              paste0("../HIV/BEAST_trees/C/Uniform_subsampling_RiskandRegion_comb", i,
+                     "/Uniform_subsampling_regionrisk.C.fasta"))
+}
+
+
+#filter metadata for each subsample list
+data.hiv.Uniform_regionrisk.C.meta.list <- lapply(Uniform_regionrisk.C.seqs.list, function(X){
+  data.hiv %>% filter(annotated_name %in% X) %>%
+  select(annotated_name, risk2.F, risk3.F, risk4.F, source, region2.F, region.CN, PWID_region.comb, sampling_year.cat)}) #filter metadata
+identical(data.hiv.Uniform_regionrisk.C.meta.list[1],data.hiv.Uniform_regionrisk.C.meta.list[2]) #confirm all are different - this should be false
+
+#save each metadata seperately
+for(i in 1:10){
+  write.table(data.hiv.Uniform_regionrisk.C.meta.list[[i]],
+              paste0("../HIV/BEAST_trees/C/Uniform_subsampling_RiskandRegion_comb", i,
+                     "/Uniform_subsampling_regionrisk.C.tsv"),
+              sep = "\t", quote = FALSE, row.names = FALSE) #save metadata
+}
+
+```
+
+
+##### D
+```{r}
+# uniform risk
+all(unlist(lapply(Uniform_risk.D.seqs.list, function(X){all(X %in% names(hiv_all.fasta))})))  #Check
+all(unlist(lapply(Uniform_risk.D.seqs.list, function(X){all(X  %in% data.hiv$annotated_name)})))  #Check
+
+#filter fasta for each subsample list
+hiv.D.Uniform_risk.D.fasta.list <- lapply(Uniform_risk.D.seqs.list, function(X){hiv_all.fasta[X]}) #filter fasta
+identical(hiv.D.Uniform_risk.D.fasta.list[1], hiv.D.Uniform_risk.D.fasta.list[2]) #confirm all are different - this shoudl be false
+
+#Save each fasta seperately
+for(i in 1:10){
+  write.fasta(hiv.D.Uniform_risk.D.fasta.list[[i]], names(hiv.D.Uniform_risk.D.fasta.list[[i]]),
+              paste0("../HIV/BEAST_trees/D/Uniform_subsampling_risk", i, "/Uniform_subsampling_risk.D.fasta"))
+}
+
+
+#filter metadata for each subsample list
+data.hiv.Uniform_risk.D.meta.list <- lapply(Uniform_risk.D.seqs.list, function(X){
+  data.hiv %>% filter(annotated_name %in% X) %>%
+  select(annotated_name, risk2.F, risk3.F, risk4.F, source, region2.F, region.CN, sampling_year.cat)}) #filter metadata
+identical(data.hiv.Uniform_risk.D.meta.list[1], data.hiv.Uniform_risk.D.meta.list[2]) #confirm all are different - this should be false
+
+#save each metadata seperately
+for(i in 1:10){
+  write.table(data.hiv.Uniform_risk.D.meta.list[[i]],
+              paste0("../HIV/BEAST_trees/D/Uniform_subsampling_risk", i, "/Uniform_subsampling_risk.D.tsv"),
+              sep = "\t", quote = FALSE, row.names = FALSE) #save metadata
+}
+
+
+# uniform risk and region combined
+
+all(unlist(lapply(Uniform_regionrisk.D.seqs.list, function(X){all(X %in% names(hiv_all.fasta))})))  #Check
+all(unlist(lapply(Uniform_regionrisk.D.seqs.list, function(X){all(X  %in% data.hiv$annotated_name)})))  #Check
+
+#filter fasta for each subsample list
+hiv.D.Uniform_regionrisk.D.fasta.list <- lapply(Uniform_regionrisk.D.seqs.list, function(X){hiv_all.fasta[X]}) #filter fasta
+identical(hiv.D.Uniform_regionrisk.D.fasta.list[1], hiv.D.Uniform_regionrisk.D.fasta.list[2]) #confirm all are different - this shoudl be false
+
+#Save each fasta seperately
+for(i in 1:10){
+  write.fasta(hiv.D.Uniform_regionrisk.D.fasta.list[[i]], names(hiv.D.Uniform_regionrisk.D.fasta.list[[i]]),
+              paste0("../HIV/BEAST_trees/D/Uniform_subsampling_RiskandRegion_comb", i,
+                     "/Uniform_subsampling_regionrisk.D.fasta"))
+}
+
+#filter metadata for each subsample list
+data.hiv.Uniform_regionrisk.D.meta.list <- lapply(Uniform_regionrisk.D.seqs.list, function(X){
+  data.hiv %>% filter(annotated_name %in% X) %>%
+  select(annotated_name, risk2.F, risk3.F, risk4.F, source, region2.F, region.CN, PWID_region.comb, sampling_year.cat)}) #filter metadata
+identical(data.hiv.Uniform_regionrisk.D.meta.list[1],data.hiv.Uniform_regionrisk.D.meta.list[2]) #confirm all are different - this should be false
+
+#save each metadata seperately
+for(i in 1:10){
+  write.table(data.hiv.Uniform_regionrisk.D.meta.list[[i]],
+              paste0("../HIV/BEAST_trees/D/Uniform_subsampling_RiskandRegion_comb", i,
+                     "/Uniform_subsampling_regionrisk.D.tsv"),
+              sep = "\t", quote = FALSE, row.names = FALSE) #save metadata
+}
+
+```
+
+
+### Proportionate - not done
+#### A1
+```{r}
+Proportionate_region_SHARP.seqs <- readRDS("../HIV/subsampled_seq_lists/proportionate_region_SHARP.A1.seqs.rds")
+Proportionate.seqs <- readRDS("../HIV/subsampled_seq_lists/Proportionate.A1.seqs.rds")
+Proportionate_regionrisk.seqs <- readRDS("../HIV/subsampled_seq_lists/Proportionate_regionrisk2.A1.seqs.rds")
+Proportionate_regionrisk.seqs <- readRDS("../HIV/subsampled_seq_lists/Proportionate_regionrisk.A1.seqs.rds")
+```
+
+
+
+
+
+# 10. Determine priors for Beauti inputs
+
+### Develop base tree (no ASR)
+For example, see: "Uniform_subsampling_RiskandRegion_comb/base_tree_skygrid_model"  
+Get a Maximum Clade Credibility tree in Tree Annotator 
+
+Note: runs trhough R shiny  
+library(PrioriTree)
+launchPrioriTree()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# BACKUP
+
+
+## OPTIONAL: Change tree tip labels to annotated names
+This should not be necessary, if the trees were made with the annotated name fasta seqeunces, but if there are trees without the annotated names, here's how to fix
+```{r, eval = FALSE}
+#read in trees
+SHARP.tree.A1 <- read.tree("../HIV/IQ_tree/SHARP_and_published_post2000/SHARP_A1/hiv_195_SHARP_V5_A1_.treefile") %>%
+  plyr::mutate(tip.label = gsub("\\|.*", "", tip.label)) %>%
+  plyr::mutate(tip.label = gsub("_.*", "", tip.label))
+length(SHARP.tree.A1$tip.label)
+# Check - should be TRUE
+all(SHARP.tree.A1$tip.label %in% names(SHARP.fasta.A1)) &
+all(names(SHARP.fasta.A1) %in% SHARP.tree.A1$tip.label)
+
+# Change tip labels
+SHARP.tree.A1$tip.label <- data$annotated_name[match(SHARP.tree.A1$tip.label, data$tree_seq_name)]
+```
+
+
+# (OPTIONAL) IDENTIFY AND DROP TIPS WITH POOR TEMPORAL SIGNAL
+Not doing this for all regions tree
+
+## Add date to SHARP seqs for tempest check
+Only need to do if running through Tempest
+```{r, eval = FALSE}
+temp_tree <- SHARP_and_published.tree
+
+data.temp <- data[match(SHARP_and_published.tree$tip.label, data$long_name),]
+data.temp <- data.temp %>%
+  mutate(long_name = case_when(source == "SHARP" ~ paste0(long_name, ".", sampling_year.F),
+                               TRUE ~ long_name))
+temp_tree$tip.label <- data.temp$long_name
+
+write.tree(temp_tree, "../HIV/ref seqs from George/temp_tree_for_tempest.newick")
+```
+
+
+## Drop tips with poor temporal behavior
+Decided not to drop tips as whole tree has poor temporal signal (due to low sampling density) anyway
+```{r, eval = FALSE}
+drop_tips <- c("A1.2013.HET.NRB.Nairobi.N.KJ502134.Ri355", "A1D.2012.HET.NRB.Nairobi.N.KM391680.R2575", "A1.2003.HET.MSA.Coast.N.DQ155118.R0702", "10CD.2011.HET.NRB.Nairobi.N.KP071701.Ri517", "A1.2017.MSM.KLF.Coast.M.MT084915.2643", "A1.2017.MSM.MSA.Coast.M.MT084916.2913", "A1.2017.MSM.KLF.Coast.M.MT084917.2801", "A1.2010.IDU.MSA.Coast.N.JN011969.R1500", "A1.2010.IDU.MSA.Coast.N.JN011957.R1488", "A1.2013.HET.NRB.Nairobi.N.KY364309.Ri706", "A1.2012.HET.NRB.Nairobi.N.KU753768.R1733", "A1.2012.HET.NRB.Nairobi.N.KF781846.Ri331", "A1.2012.HET.NRB.Nairobi.N.KU753790.R1933", "844644329223_DBS_Sequencing_shipment1", "CD01AEF2.2013.HET.NRB.Nairobi.M.KM853136.Ri487", "A1.2017.MSM.MSA.Coast.M.MT084918.2787", "A1.2017.MSM.KLF.Coast.M.MT084917.2801", "A1.2017.MSM.KLF.Coast.M.MT084914.2760", "818047558623_DBS_Sequencing_shipment3", "A1.2010.IDU.MSA.Coast.N.JN011987.R1517", "A1.2010.IDU.MSA.Coast.N.JN011969.R1500", "A1.2010.IDU.MSA.Coast.N.JN011957.R1488", "A1.2013.HET.NRB.Nairobi.N.KM853099.Ri452") #R1488 & R1500 paassed tempest signal but are further outliers thanR1517, so I excluded them also
+all(drop_tips %in% SHARP_and_published.tree$tip.label)
+
+SHARP.tree <- drop.tip(SHARP.tree, drop_tips)
+published.tree <- drop.tip(published.tree, drop_tips)
+SHARP_and_published.tree <- drop.tip(SHARP_and_published.tree, drop_tips)
+```
+

@@ -1,0 +1,1051 @@
+---
+title: "clean_and_combine_data"
+author: "Hanley"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+options(digits = 4) ## Formats output to 4 digits
+```
+
+
+# Load libraries
+I need to figure out which of these I'm actually using
+```{r, warning=FALSE, message=FALSE}
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(magrittr)
+library(lubridate)
+library(haven)
+library(data.table)
+library(tibble)
+library(arsenal)
+library(Hmisc)
+
+
+library(ggplot2)
+
+library(ape)
+library(seqinr)
+library(phangorn)
+library(phytools)
+
+library(igraph)
+library(purrr)
+
+library(Biostrings)
+
+library(geiger)
+library(phangorn)
+library(phylobase)
+library(remotes)
+
+library(readxl)
+library(kableExtra)
+```
+
+```{r, prest formatting arguments for table1, echo = FALSE}
+#render.continuous
+rndr_cts = function(x) {
+    with(stats.default(x),
+         sprintf("%0.1f (%0.1f, %0.1f)", MEDIAN, MIN, max()))
+}
+
+#render.categorical
+rndr_cat = function(x) {
+    c("", sapply(stats.default(x), function(y) with(y,
+        sprintf("%d (%0.1f%%)", FREQ, PCT))))
+}
+```
+
+<br><br><br>
+
+# 1. READ IN METADATA
+
+
+## SHARP and published HIV sequences vector
+```{r}
+HIV_SHARP.seq_names <-
+  scan("../HIV/ptid_lists/hiv_sharp_all_303.ptids.txt", character(), sep = "\t") %>%
+  gsub("\\|.*", "", .) %>% gsub("_PRRT", "",.) 
+
+SHARP_and_published_SHARP.seq_names <-
+  scan("../HIV/ptid_lists/hiv_4065_SHARP_and_published V4.ptids.txt", character(), sep = "\t") %>%
+  gsub("\\|.*", "", .) %>% gsub("_PRRT", "",.) 
+```
+
+## Partner data
+```{r}
+#partner data / metadata
+partners <- read.csv("../metadata/raw/sharp_partner_master_data.csv") %>%
+  mutate(ptid = as.character(ptid),
+         index_ptid = as.character(index_ptid),
+         SHARP_source = "partner")
+
+table(partners$IndexorPartner, useNA = "ifany") #This variable is not correct (most people are missing - I will create myself)
+table(in_index = partners$in_index, in_partners = partners$in_partner, useNA = "ifany")
+
+# Participants can be included multiple times as partners. Compare different enrollments for the same participant
+#How do rows with the same ptid differ? - show FALSE for any column that don't match
+as.data.frame(t(partners[partners$ptid == "111659578254",][1,] == partners[partners$ptid == 111659578254,][2,])) %>% #compare the first 2 rows with the same ptid
+  filter(.[,1] == FALSE)
+as.data.frame(t(partners[partners$ptid == "111659578254",][1,] == partners[partners$ptid == 111659578254,][2,])) %>% #compare the first 2 rows with the same ptid
+  filter(.[,1] == FALSE)
+```
+entries in partner dataframe: `r nrow(partners)`  
+number of unique partners: `r length(unique(partners$ptid))`  
+partners without enrollment dates: `r sum(is.na(partners$enrollment_date))`
+
+## Index data
+```{r}
+indexes <- read.csv("../metadata/raw/sharp_index_master_data.csv") %>%
+  mutate(ptid = as.character(ptid),
+         SHARP_source = "index")
+#set everinjecteddrugs to 1 for all indexes (enrollment criteria)
+indexes$everinjecteddrugs <- 1
+```
+number of indexes: `r nrow(indexes)`  
+indexes without enrollment dates: `r sum(is.na(indexes$enrollment_date))`  
+duplicated indexes: `r `sum(duplicated(indexes$ptid))`
+partners_enrolled_as_indexes: `r `sum(unique(partners$ptid) %in% indexes$ptid)`
+
+## Seq data - Genbank accession IDs
+```{r}
+accession_seq_names_key <- read.csv("../HIV/genbank_submission/KEY2_NOT_FOR_SUBMISSION.csv", colClasses =c("ptid" = "character"))
+```
+
+## metadata for published HIV sequences
+```{r}
+#previosuly published HIV sequence metadata
+published.HIV.meta <- read_excel("../HIV/ref seqs from George/4058-kenyan-HIVpol-metadata.xlsx") %>%
+  #rename columns to match SHARP metadata names
+  mutate(source = "published",
+         Sequence.name = gsub(">", "", Sequence.name), 
+         Sequence.name2 = ptid, #I don't want to share the SHARP ptids, but ptid in the published seqs is necissary to include in order have all unique sequences. Therefore, we make a dummy variable that uses the published sequence ptids but will be NA for SHARP and will use this in making the annotated names. Note that the .NA at the end of the SHARP sequences is being dropped by certain programs, so if sequence names aren't matching up between files, that may be the reason
+         tree_seq_name = Sequence.name,
+         sex = case_when(
+           sex == "F" ~ "Female",
+           sex == "M" ~ "Male"
+         ),
+         region = ifelse(region == "R_valley", "Rvalley", region))
+```
+number of available published sequences (before filtering): `r nrow(published.HIV.meta)`  
+
+
+
+
+## List of ptids with HCV sequences
+```{r}
+HCV_SHARP.seq_names <-
+  scan("../HCV/ptid_lists/hcv_sharp_all_89.ptids.txt", character())
+```
+
+To do: update, possibly add list that include reference sequences
+
+## Genotype data - HIV  
+(from from: https://comet.lih.lu/ - edited in parse_fasta_files)
+```{r}
+COMET_genotype.SHARP_hiv <- readRDS("../HIV/lanl output, ref seqs, COMET output/sharp/sharp_hiv_313.COMET_subtypes_edited.rds") %>%
+  mutate(Sequence.name = as.character(Sequence.name)) %>%
+  select(Sequence.name, COMET_subtype.F, COMET_subtype_best_guess.F)
+
+COMET_genotype.published_hiv <- readRDS("../HIV/lanl output, ref seqs, COMET output/published/published_hiv_4058.COMET_subtypes_edited.rds") %>%
+  mutate(Sequence.name = as.character(Sequence.name)) %>%
+  select(Sequence.name, COMET_subtype.F, COMET_subtype_best_guess.F)
+
+#Combine into one file
+COMET_genotype.hiv <- rbind(COMET_genotype.SHARP_hiv, COMET_genotype.published_hiv)
+
+REGA_genotype.SHARP_hiv <- readRDS("../HIV/lanl output, ref seqs, COMET output/sharp/sharp_hiv_303.REGA_subtypes_edited.rds") %>%
+  mutate(Sequence.name = as.character(Sequence.name))
+
+#Combine into one file
+genotypes.hiv <- left_join(COMET_genotype.hiv, REGA_genotype.SHARP_hiv, by = "Sequence.name")
+```
+
+## Genotype data - HCV
+```{r}
+COMET_genotype.SHARP_hcv <- readRDS("../HCV/lanl output, ref seqs, COMET output/hcv_135.COMET_subtypes_edited.rds") %>%
+  mutate(ptid = as.character(ptid))
+```
+
+
+<br><br><br>
+
+
+# 2. CLEAN AND MERGE DATA
+
+## Clean participant data
+### Compair date variables - investigation only
+```{r}
+#add a column that indicates which table the entry is originally from
+partners$SHARP_source <- "partners"
+indexes$SHARP_source <- "indexes"
+
+#Examine various date variables
+participants_date <- rbind.fill(
+  indexes[, c("ptid", "test_date", "er_date", "fl_date", "enrollment_date", "SHARP_source")],
+  partners[, c("ptid", "test_date", "DateofSamplecollection", "er_date", "pe_date", "sc_date", "fl_date", "enrollment_date", "SHARP_source")])
+
+participants_date.df <- participants_date[order(participants_date$ptid),]
+head(participants_date.df %>% group_by(ptid))
+```
+
+### combine partner and index data
+```{r}
+#combine partners and indexes:
+participants <- rbind.fill(partners, indexes)
+```
+total entries in participant file: `r nrow(participants)`
+
+
+### Explore variables
+```{r}
+#Look at index_or_partner variables
+table(participants$IndexorPartner, useNA ="ifany")
+#^ This variable is mostly empty so I will generate
+
+#in_index and in_partner variables are completer, so use this.
+table(participants$in_index, useNA ="ifany")
+#0-1 codes, no missing
+table(participants$in_partner, useNA ="ifany")
+#this is a numeric variable indicating the number of times the individual was named as a partner. No missing values
+
+#Are number of enrollments / partner counts logical?
+head(merge(
+  partners[partners$ptid %in% COMET_genotype.SHARP_hiv$ptidv, c("ptid", "in_index", "in_partner", "test_date")],
+  indexes[indexes$ptid %in% COMET_genotype.SHARP_hiv$ptid, c("ptid", "in_index", "in_partner", "test_date")], by = c("ptid", "test_date"), all.x = TRUE, all.y = TRUE, suffix = c(".partner_file",".index_file")))
+
+#Look at date variables
+#confirm all dates are in the expected format - this will print any that aren't
+participants %>%
+  filter(!grepl("[0-9]{2}[a-z]{3}[0-9]{4}", enrollment_date)) %>%
+  select(enrollment_date, ptid)
+
+#Look at previous HIV testing variables
+table(participants$hivtestbeforepositive, useNA = "ifany")
+
+table(time = participants$firstpositivehivtesttime_y, prior_pos = participants$hivtestbeforepositive, useNA ="ifany")
+#Shows that anyone who didn't previously test positive has NA for time. So I can use 0 for time_y as < 1 year
+```
+**partner counts / partner type**  
+There are some inconsistencies in the partner counts between partner and index files (sometimes the count is 1 lower in the index file) - this probably doesn't matter because I am going to use 0-1 coding. I will use whichever value matches the most recent entry  
+Note: there is no partner-type column in the index data, so I need to make sure that if the index enrollment is used for an individual that any partner-type value is copied over  
+**dates**  
+will sort by enrollment date and keep only entiries for earliest enrollment date   
+confirmed that all enrollement dates are in the expected format: *[0-9]{4}-[0-9]{2}-[0-9]{2}*  
+number of missing enrollment dates: `r sum(is.na(participants$enrollment_date))`  
+
+To do: confirm that prior pos. HIV test is per-enrolement, not a combiend varaible  
+
+
+### add accession numbers and sequence names to participant data
+```{r}
+participants <- left_join(participants, accession_seq_names_key[, c("ptid", "Sequence.name", "accession")], by = "ptid") %>%
+  mutate(tree_seq_name = ptid,
+         Sequence.name2 = Sequence.name,
+         source = "SHARP")
+```
+
+### add genotype data seperately to SHARP and published sequence data
+Have to do these seperately because we're using different join columns for each
+```{r}
+#SHARP data
+participants <- left_join(participants, genotypes.hiv, by = c("ptid" = "Sequence.name"))
+participants <- left_join(participants, COMET_genotype.SHARP_hcv[, c("ptid", "hcv_COMET_subtype.F", "hcv_COMET_bootstrap_support", "hcv_multiple_strains.F", "hcv_COMET_subtype_alt_strain.F")], by = "ptid")
+
+#published data
+published.HIV.meta <- left_join(published.HIV.meta, genotypes.hiv, by = c("Sequence.name"  = "Sequence.name"))
+```
+
+
+### Aggregate index_ptid (index who named partner) and partner_type columns accross all enrollments
+```{r}
+#Combine index_Sequence.name (the index who named the partner) for each entry into a single column, that way these aren't lost when selecting only 1 entry per partner
+#Note: if want to keep as a list (instead of collapse into a string, replace paste0 with c)
+participants_agg <- participants %>%
+  group_by(ptid) %>%
+  dplyr::summarise(index_ptids.F = toString(na.omit(index_ptid))) %>%
+  right_join(participants, by = "ptid") %>%
+  ungroup()
+  
+#Combine partner_type for each partner entry into a single column, that way these aren't lost when selecting only 1 entry per ptid 
+participants_agg2 <- participants_agg %>% group_by(ptid) %>%
+  dplyr::summarize(partner_type_comb.F = toString(na.omit(partner_type))) %>%
+  right_join(participants_agg, by = "ptid") %>%
+  mutate(
+    partner_type_comb.F = case_when(
+      grepl("Injecting|injecting", partner_type) & grepl("Sexual|sexual", partner_type) ~ "Sexual&Injecting",
+      grepl("Injecting", partner_type) ~ "Injecting",
+      grepl("Sexual", partner_type) ~ "Sexual"),
+    ) %>% ungroup()
+
+#Get total number of enrollments for each individual
+participants_agg3 <- participants_agg2  %>% 
+  mutate(encounter2 = ifelse(is.na(encounter), 0, encounter)) %>%
+  group_by(ptid) %>%
+  dplyr::summarize(times_enrolled_partner = max(encounter2)) %>%
+  right_join(participants_agg2, by = "ptid") %>% #Note that because index enrollments aren't included as an encounter, this is the number of times enrolled as a partner, not the total number of tiems enrolled
+  ungroup()
+
+hist(participants_agg3$times_enrolled_partner, breaks = 15) #check
+
+
+#Compare old to new (aggregated) columns
+head(participants_agg3[!is.na(participants_agg3$SHARP_source) & participants_agg3$SHARP_source == "partners", c("ptid", "Sequence.name", "index_ptid", "index_ptids.F", "partner_type", "partner_type_comb.F", "encounter", "times_enrolled_partner")])
+```
+TO DO: I beleive warning is because this varaible is not present in published data - but look more into
+
+
+### add published sequence metadata to participant data
+```{r}
+#Check which columns are shared
+intersect(colnames(participants_agg3), colnames(published.HIV.meta))
+
+participants_agg3 <- rbind.fill(participants_agg3, published.HIV.meta)
+```
+
+
+### Transform variables and limit participants data to 1 entry per individual
+```{r}
+participants2 <- participants_agg3 %>%
+  mutate(
+    
+    #sequence
+    HIV_seq_available = case_when(
+      (source == "SHARP" & ptid %in% SHARP_and_published_SHARP.seq_names) |
+      (source == "published" & !is.na(sampling_year) & Sequence.name %in% SHARP_and_published_SHARP.seq_names) ~ "Yes",
+      TRUE ~ "No"
+    ),
+
+    #Sampling year
+    sampling_year.F = case_when(
+      source == "published" ~ as.integer(sampling_year),
+      source == "SHARP" & (is.na(DateofSamplecollection) | DateofSamplecollection == "")  ~ year(parse_date_time(enrollment_date, c("dbY"))), #If DateofSamplecollection is missing, use enrollement_date instead
+      source == "SHARP" ~ year(parse_date_time(DateofSamplecollection, c("mdY", "dbY")))
+    ),
+    sampling_year.cat = case_when(
+        sampling_year.F > 2014 ~ "2015+",
+        sampling_year.F >= 2001 & sampling_year.F <= 2014 ~ "2001-2015",
+        sampling_year.F <= 2000 ~ "pre-2001",
+        TRUE ~ as.character(NA)
+      ) %>% factor(levels = c("pre-2001", "2001-2015", "2015+")),
+    
+    #Enrollment
+    in_index.F = case_when( #Index file uses 1 to indicate in_index, convert this to "Yes" to match formatting in partners data
+      in_index == 1 ~ "Yes",
+      TRUE ~ in_index
+    ),
+    index_or_partner.F = case_when( #make an index_or_partner variable that combines the in_index and in_partner columns
+      #Note: in_index variable is binary but in_partner variable is a count of the number of times in the partner dataset
+      in_index.F == "Yes" & in_partner == 0 ~ "index",
+      in_index.F == "No" & in_partner != 0 ~ "partner",
+      in_index.F == "Yes" & in_partner != 0  ~ "index_and_partner"),
+    
+    #HIV subtype
+    hiv_subtype.F = case_when(
+      source == "published" ~ hiv_subtype,
+      source == "SHARP" ~ REGA_subtype.F
+    ),
+    hiv_subtype2.F = case_when(
+      source == "published" & grepl(".*[A-Za-z].*[A-Za-z].*", hiv_subtype.F) ~ "recombinant", #checks for >1 letter, indicating more than one subtype
+      source == "published" ~ hiv_subtype,
+      source == "SHARP" ~ REGA_subtype2.F
+    ),
+    non_recombinants = case_when(
+      hiv_subtype2.F == "recombinant" | hiv_subtype.F ==  "recombinant (CRF)" | is.na(hiv_subtype.F) ~ 0,
+       TRUE ~ 1),
+    A1_subtype = case_when(     #Because most people are A1, we will compare A1 to other - make a new column for this comparison
+      hiv_subtype.F == "A1" ~ "A1",
+      hiv_subtype.F == "A2" ~ as.character(NA), #Make other A subtypes NA because they are rare and we don't want to count them as A or not A
+      non_recombinants == 0 ~ as.character(NA), #also include recombinants as NA
+      TRUE ~ "other") %>% as.factor(),
+
+    #HIV outcomes
+    hiv_status_final.F = case_when( #hiv_status has some blank entries, if these ptids are indexes, we can assume hiv status is positive, otherwise they should be NA
+      (hiv_status_final == "" | is.na(hiv_status_final)) & in_index == "Yes" ~ "Positive", #No status listed but is in the index file (HIV positivity is a condition for enrollment as an index)
+      hiv_status_final == "" & in_index != "Yes" ~ as.character(NA),
+      TRUE ~ hiv_status_final
+    ),
+    hiv_vl.cat = case_when(is.na(hiv_vl) | hiv_vl == "N/A" | hiv_vl == "" | hiv_vl == " " ~ as.character(NA),
+                           hiv_vl == "SAMPLE DID NOT PASS QC" ~ "SAMPLE DID NOT PASS QC",
+                           hiv_vl == "<832" | hiv_vl == "<839" | as.numeric(hiv_vl) < 1000 ~ "<1,000",
+                           as.numeric(hiv_vl) >= 1000 & as.numeric(hiv_vl) < 10000 ~ "1,000-10,000",
+                           as.numeric(hiv_vl) >= 10000  ~ ">=10,000") %>%
+      factor(levels = c("SAMPLE DID NOT PASS QC", "<1,000", "1,000-10,000", ">=10,000")),
+    SHARP_hiv_seq.F = ifelse(ptid %in% HIV_SHARP.seq_names | Sequence.name %in% HIV_SHARP.seq_names, "Yes", "No"),
+    
+    #HCV outcomes
+    hcv_vl.cat = case_when(is.na(hcv_vl) | hcv_vl == "N/A" | hcv_vl == "" | hcv_vl == " " ~ as.character(NA),
+                           hcv_vl == "SAMPLE DID NOT PASS QC" ~ "SAMPLE DID NOT PASS QC",
+                           hcv_vl == "Not detected" ~ "Not detected",
+                           hcv_vl == "<186" | hcv_vl == "<338" | as.numeric(hcv_vl) < 338 ~ "<338",
+                           as.numeric(hcv_vl) >= 338 & as.numeric(hcv_vl) < 10000 ~ "338-10,000",
+                           as.numeric(hcv_vl) >= 10000 ~ ">=10,000") %>%
+      factor(levels = c("SAMPLE DID NOT PASS QC", "Not detected", "<338", "338-10,000", ">=10,000")),
+    SHARP_hcv_seq.F = ifelse(Sequence.name %in% HCV_SHARP.seq_names, "Yes", "No"),
+    
+    #HIV history
+    first_pos_hiv_time.cat = case_when( #categorize time since HIV diagnosis:
+      hiv_status_final.F == "Negative" ~ as.character(NA),
+      (hivtestbeforepositive == "No") & hiv_status_final == "Positive" ~ "newly diagnosed",
+      (hivtestbeforepositive == "Yes (tested positive)" | hivtestbeforepositive == "Yes (told have HIV)") & firstpositivehivtesttime_y < 2  ~ "< 2 years",
+      (hivtestbeforepositive == "Yes (tested positive)" | hivtestbeforepositive == "Yes (told have HIV)") & firstpositivehivtesttime_y >= 2 & firstpositivehivtesttime_y < 6 ~ "2-6 years",
+      (hivtestbeforepositive == "Yes (tested positive)" | hivtestbeforepositive == "Yes (told have HIV)") & firstpositivehivtesttime_y >= 6 ~ ">= 6 years") %>%
+      factor(levels = c("newly diagnosed", "< 2 years", "2-6 years", ">= 6 years")),
+    #Get the date of first positive HIV test (in order to compare the time between the diagnoses of indexes and partners in later analyses)
+    date_HIV_diagnosis.F = case_when(
+      hiv_status_final.F == "Negative" ~ as.Date(NA),
+      hivtestbeforepositive == "No" ~ as.Date(dmy(enrollment_date)),
+      TRUE ~ as.Date(dmy(enrollment_date)) - 
+        (firstpositivehivtesttime_y*365 + firstpositivehivtesttime_m*31 + firstpositivehivtesttime_d)),
+    years_since_HIV_diagnosis = case_when(
+      hiv_status_final.F == "Negative" ~ as.numeric(NA),
+      hivtestbeforepositive == "No" ~ 0, #Those diagnosed at enrollment are 0
+      TRUE ~ firstpositivehivtesttime_y + firstpositivehivtesttime_m/12 + firstpositivehivtesttime_d/365),
+
+    #HCV history
+    previous_HCV_diagnosis.F = case_when(
+      hcvresults_final == "Negative" ~ as.character(NA),
+      hepc_test == "No" | hepc_testresult == "Negative" ~ "No",
+      hepc_test == "Yes" & hepc_testresult == "Yes" ~ "Yes"),
+    first_hcv_treatment_time.cat = case_when( #categorize time since HCV diagnosis:
+      hcvresults_final == "Negative" ~ as.character(NA),
+      hepc_testresult == "Negative" & hcvresults_final == "Positive" ~ "newly diagnosed",
+      hepc_testresult == "Positive" & hcvresults_final == "Positive" & hcv_treatment == "No" ~ "diagnosed but never treated",
+      hcv_treatment == "Yes" & hcv_treatmentstarttime_y < 2  ~ "< 2 years",
+      hcv_treatment == "Yes" & hcv_treatmentstarttime_y >= 2 ~ ">= 2 years") %>%
+      factor(levels = c("newly diagnosed", "diagnosed but never treated", "< 2 years", ">= 2 years")),
+    #Get the date of first positive HCV test (in order to compare the time between the diagnoses of indexes and partners in later analyses)
+    date_first_HCV_treatment.F = case_when(
+      hcvresults_final == "Negative" ~ as.Date(NA),
+      hepc_testresult == "Negative" ~ as.Date(dmy(enrollment_date)),
+      TRUE ~ as.Date(dmy(enrollment_date)) - 
+        (hcv_treatmentstarttime_y*365 + hcv_treatmentstarttime_m*31 + hcv_treatmentstarttime_d)),
+    years_since_first_HCV_treatment.F = case_when(
+      hepc_testresult == "Negative" ~ 0, #start with a date at end of study
+      TRUE ~ hcv_treatmentstarttime_y + hcv_treatmentstarttime_m/31 + hcv_treatmentstarttime_d/365),
+    
+    #Injecting behaviors
+    everinjecteddrugs.F = case_when(everinjecteddrugs == 1 | in_index.F == "Yes" ~ "Yes",
+                                  everinjecteddrugs == 0 ~ "No") %>%
+      factor(levels = c("No", "Yes")),
+    
+    activeinjector.F = case_when(is.na(everinjecteddrugs.F) ~ as.character(NA),
+                                 everinjecteddrugs.F == "No" ~ "No",
+                                 (is.na(injecttimesmonth) & !is.na(everinjecteddrugs.F)) | injecttimesmonth == 0  ~ "No",
+                                 everinjecteddrugs.F == "Yes" & injecttimesmonth >= 1 ~ "Yes",
+                                 TRUE ~ as.character(NA)),
+    shareneedles.F = case_when(
+      activeinjector.F == "No" ~ "have not injected in the last month",
+      TRUE ~ shareneedles
+    ) %>%
+      factor(levels = c("No", "Yes", "have not injected in the last month")),
+    
+    #Sexual behaviors
+    sex_partners_3mo.cat = cut(
+      sexpartners3months,
+      breaks = c(-1, 0, 2, Inf),
+      labels = c("0", "1to2", "more_than_2")
+    ) %>%
+      factor(levels = c("0", "1to2", "more_than_2")),
+    rcdmoneysex.MF = case_when( #stratify this variable by sex
+      rcdmoneysex == "Yes" & sex == "Female" ~ "F_Yes",
+      rcdmoneysex == "Yes" & sex == "Male" ~ "M_Yes",
+      rcdmoneysex == "No" & sex == "Female" ~ "F_No",
+      rcdmoneysex == "No" & sex == "Male" ~ "M_No",
+      TRUE ~ as.character(NA)) %>% as.factor(),
+    
+    #Demographics
+    region.CN = ifelse(region == "Coast" | region == "Nairobi", region,
+                       as.character(NA)) %>% factor(levels = c("Coast", "Nairobi")),
+    region2.F = case_when(region == "Coast" | region == "Nairobi" ~ region,
+                          !is.na(region) ~ "Other",
+                          TRUE ~ as.character(NA)) %>% factor(levels = c("Coast", "Nairobi", "Other")),
+    
+    #barriers to care
+    barriertransportation.F = factor(barriertransportation, levels = c("No", "Yes")),
+    sleeppastmonth.F = case_when(
+      sleeppastmonth == "Home (house, apartment, etc" | sleeppastmonth == "Home of a friend/relative" ~ "Home or friend's home",
+      sleeppastmonth == "Hotel/nightly rental" ~ "Hotel/nightly rental",
+      sleeppastmonth == "In the open " | sleeppastmonth == "Improvised shelter" ~ "Improvised shelter or in the open",
+      is.na(sleeppastmonth) ~ as.character(NA)
+    ) %>% as.factor(),
+    
+    #Key populations
+    FSW.F = case_when(!is.na(risk) & risk =="FSW" ~ "FSW", #published data already has this info in risk category - could just use pivot-wider to expand to binary columns, but we also want to incorporate SHARP data. FSW definition from prior Mombasa study (PMID: 20156095) is transactional sex at least once in the last 3 months
+                    source == "SHARP" & sex == "Female" & rcdmoneysex == "Yes" & sexpartners3months >= 3 ~ "FSW",
+                    TRUE ~ as.character(NA)),
+    PWID.F = case_when(
+                  !is.na(risk) & risk == "IDU" ~ "PWID",       
+                  everinjecteddrugs.F == "Yes" ~ "PWID",
+                 TRUE ~ as.character(NA)),
+    MSM.F = case_when(
+                  !is.na(risk) & risk == "MSM" ~ "MSM",
+                 source == "SHARP"  & sex == "Male" &
+                   (havesexwith == "With men and women" | havesexwith == "Only with men") ~ "MSM",
+                 TRUE ~ as.character(NA)),
+    HET.F = case_when(
+                  source == "SHARP" & is.na(PWID.F) & is.na(MSM.F) & is.na(FSW.F) ~ "HET", #For SHARP, if not in any other key pop, call HET. IMPORTANT: HET is actually standing in for "not in a key population". There are 4 SHARP sequences from women who have had sex with women but don't fall into any of the above key populations and so are listed as HET. There are also 3 women and 1 man who don't fall into other key pops and reported no sexual partners. They are also listed as HET
+                  !is.na(risk) & risk == "HET" ~ "HET", #for previously published seqs
+                 TRUE ~ as.character(NA)),
+    risk2.F = case_when( #combined risk category (participants can fall into >1 risk category)
+      FSW.F == "FSW" & PWID.F == "PWID" ~ "FSW_PWID",
+      FSW.F == "FSW" ~ "FSW",
+      MSM.F == "MSM" & PWID.F == "PWID" ~ "MSM_PWID",
+      MSM.F == "MSM" ~ "MSM",
+      PWID.F == "PWID" ~ "PWID",
+      HET.F == "HET" ~ "HET" #Note: participants in a key population are NOT included oin the HET group
+    ) %>%
+      factor(levels = c("PWID", "FSW", "FSW_PWID", "MSM", "MSM_PWID", "HET")),
+    risk3.F = case_when( #Drop any in multiple risk categories
+      grepl("_", as.character(risk2.F)) ~ as.character(NA),
+      TRUE ~ as.character(risk2.F)
+    ) %>%
+      as.factor(),
+    risk4.F = case_when( #each participant falls into only 1 cluster
+      risk2.F == "FSW_PWID" ~ "PWID", #group FSW_PWID with PWID because many are likely exchanging sex for drugs, which will be different than among many FSW who may income doing sex work
+      risk2.F == "MSM_PWID" ~ "MSM", #based on cluster analysis, MSM_PWID group with MSM
+      TRUE ~ risk2.F
+    ) %>% as.factor(),
+    PWID_region.comb = case_when(
+      PWID.F == "PWID" & region.CN == "Coast" ~ "PWID_Coast",
+      PWID.F == "PWID" & region.CN == "Nairobi" ~ "PWID_Nairobi",
+      is.na(PWID.F) & region.CN == "Coast" ~ "nonPWID_Coast",
+      is.na(PWID.F) & region.CN == "Nairobi" ~ "nonPWID_Nairobi",
+      TRUE ~ as.character(NA)
+    ) %>% factor(levels = c("nonPWID_Coast", "nonPWID_Nairobi", "PWID_Coast", "PWID_Nairobi")), #All factors for ASR should be in alphabetical order
+    
+    #annotated name
+    annotated_name =
+      paste(hiv_subtype.F, sampling_year.F, risk2.F, region, sex, accession, Sequence.name2, sep = ".")) %>%
+    #Add the risk categories from SHARP data to the categorical variable risk - note: that individuals who fall into multiple risk groups will be their own category, which is why the binary variables will likely be more helpful
+  unite(risk.F, FSW.F, PWID.F, MSM.F, HET.F, sep = "_", na.rm = TRUE, remove = FALSE) %>%
+  
+  #Drop anyone with risk INF (not using)
+  filter(is.na(risk) | risk != "INF") %>%
+
+  #Select only the most recent enrollment date
+  group_by(ptid, Sequence.name) %>%
+  #sort by enrollment date (format DDmYYYY) - note: arrange is able to recognize this format
+  dplyr::arrange(dmy(enrollment_date), .by_group = TRUE)
+
+#Confirm correct ordering by enrollment_date
+participants2[participants2$source == "SHARP", c("Sequence.name", "enrollment_date", "encounter")][1:10,]
+
+participants3 <- participants2 %>%
+  #keep only the entry for the first (earliest) enrollment date
+  dplyr::slice(1L) %>%
+  ungroup()
+```  
+TO DO: check warning  
+TO DO: verify vl category cut-offs and why NAs are being introduced  
+TO DO: add HCV viral supression  
+TO DO: use DateofSamplecollection instead of enrollment date for sampling year for SHARP - these should be the same, but DateofSamplecollection is technically what we're looking for. Unfrotunately, this varaible contains dates in differnt formats, which makes it hard to parse. Enrollmentdate is clean
+Note: use shareneedles NOT sharedneedle variable  
+CAUTION: risk2.F and risk4.F have different level orders!  
+**Note: .cat = categorical & .F = final - both indicate a manipulated variable for use in analysis**
+
+
+### Check annotated names
+```{r}
+#Make sure there's no special characters in annoyated names
+any(grepl(":|\\||\\,|\\(|\\)|\\$|-", participants3$annotated_name))
+
+participants3$annotated_name[grepl(":|\\||\\,|\\(|\\)|\\$|-", participants3$annotated_name)]
+```
+
+
+### Add labels to commonly-used variables
+```{r}
+label(participants3$partner_type_comb.F) = "Partner type (combined across all enrollments)"
+label(participants3$sex) = "Sex"
+label(participants3$hiv_status_final.F) = "HIV status"
+label(participants3$COMET_subtype.F) = "HIV subtype (estimated with COMET)"
+label(participants3$REGA_subtype.F) = "HIV subtype (estimated with REGA)"
+label(participants3$hiv_subtype.F) = "HIV subtype"
+label(participants3$hiv_vl.cat) = "HIV viral load (categorical)"
+label(participants3$hcvresults_final) = "HCV seropositivity"
+label(participants3$hcv_vl.cat) = "HCV viral load (categorical)"
+label(participants3$hivtestbeforepositive) = "Previously tested positive for HIV*"
+label(participants3$first_pos_hiv_time.cat) = "Time since first positive HIV test"
+label(participants3$firstpositivehivtesttime_y) = "Years since first positive HIV test"
+label(participants3$everinjecteddrugs.F) = "Ever injected drugs"
+label(participants3$activeinjector.F) = "Injected drugs in the last month"
+label(participants3$sex_partners_3mo.cat) = "number of sex partners in the previous 3 months"
+label(participants3$shareneedles.F) = "Shared needles in the last month**"
+label(participants3$shareequipment) = "Shared injecting equipment in the last month**"
+label(participants3$sexpartners3months) = "Number of sex partners in the previous 3 months"
+label(participants3$rcdmoneysex.MF) = "Ever received money or goods for sex (stratified by gender)"
+label(participants3$barriertransportation) = "Indicate transportation is a barrier to receiving care"
+label(participants3$risk2.F) = "Key population"
+label(participants3$risk3.F) = "Key population (exclude participants in multiple key pops)"
+label(participants3$risk4.F) = "Key population (FSW_PWID classified as PWID, MSM_PWID classified as MSM)"
+```
+
+To do: add additional labels
+
+### Count number of individuals who seroconverted during the study and make seperate participant dataframes 
+```{r}
+#HIV
+seroconverted_hiv <- participants2 %>%
+  dplyr::summarise(seroconvert = length(na.omit(unique(hivstatus))), hiv_seq = SHARP_hiv_seq.F) %>%
+  filter(seroconvert > 1) %>%
+  dplyr::slice(1L)
+seroconverted_hiv 
+
+#HCV
+seroconverted_hcv <- participants2 %>%
+  dplyr::summarise(seroconvert = length(na.omit(unique(hcvstatus))), hcv_seq = SHARP_hcv_seq.F) %>%
+  filter(seroconvert > 1) %>%
+  dplyr::slice(1L)
+seroconverted_hcv
+
+#Save separate data frames of enrollment data from the earliest enrollment in which the individual was HIV or HCV positive. This differs from the participants3 data frame where the 1st enrollment is used regardless of HIV or HCV status.
+participants2.hiv <- participants2 %>%
+  #group by hiv status, then enrollment date - keeping the earliest enrollment at which an individual was HIV positive
+  dplyr::arrange(desc(hivstatus), dmy(enrollment_date), .by_group = TRUE)
+participants2.hiv[participants2.hiv$ptid ==  "142208962354" | participants2.hiv$ptid == "177594834286", c("ptid", "enrollment_date", "encounter", "hivstatus", "SHARP_source")]
+  #keep only the entry for the first (earliest) enrollment dates
+participants3.hiv <-participants2.hiv %>% dplyr::slice(1L)
+
+
+participants2.hcv <- participants2 %>%
+  #group by hiv status, then enrollment date - keeping the earliest enrollment at which an individual was HIV positive
+  dplyr::arrange(desc(hcvstatus), dmy(enrollment_date), .by_group = TRUE)
+participants2.hcv[participants2.hcv$ptid ==  "679541413093" | participants2.hiv$ptid == "897064229665", c("ptid", "enrollment_date", "encounter", "hcvstatus", "SHARP_source")]
+  #keep only the entry for the first (earliest) enrollment dates
+participants3.hcv <-participants2.hcv %>% dplyr::slice(1L)
+
+#verify all data frames are the same length - should be true
+nrow(participants3) == nrow(participants3.hiv)
+```  
+There are only `r sum(seroconverted_hiv$seroconvert > 1)` participants with documented seroconversion for HIV (`r sum(seroconverted_hiv$hiv_seq == "Yes")` of these have a sequence) during the study. Note: there are an additional 12 participants who are NA for some of their HIV statuses (code not included). There are `r sum(seroconverted_hcv$seroconvert > 1)` individuals whose HCV status differed by enrollment (`r sum(seroconverted_hcv$hcv_seq == "Yes")` of these have a sequence). Note: these may not all be seroconverters. Note: there are an additional 66 individuals who are NA for some but not all of their HCV statuses. NA = didn't know their HIV status at that enrollment    
+For now, I will just use the epi data from 1st enrollment (even for individuals who seroconverted during the study). So participants2.hiv and participants2.hcv are not currently saved or used.   
+To do: verify what should be the criteria for PWID designation  
+
+
+# QC
+##date variables
+```{r}
+#confirm no missing sampling date - should be 0
+sum(is.na(participants3[participants3$source == "SHARP",]$DateofSamplecollection))
+
+#Confirm correct filtering by enrollment_date - note: can't just use "encounter" variable because index enrollments don't include an encounter variable and may have occurred before or after partner enrollments 
+participants2[1:13, c("ptid", "enrollment_date", "encounter", "SHARP_source")] #all encounters
+participants3[1:10, c("ptid", "enrollment_date", "encounter", "SHARP_source")] #1 entry per participant - confrim only earliest encounter is used
+
+#Look at another cross-section of the data
+participants2[40:56, c("ptid", "enrollment_date", "encounter", "SHARP_source")] #all encounters
+participants3[32:40, c("ptid", "enrollment_date", "encounter", "SHARP_source")] #1 entry per participant - earliest encounter only
+
+#Look at sampling date
+participants3 %>%
+  filter((hiv_status_final.F == "Positive" | hcvresults_final == "Positive") & source == "SHARP") %>%
+  select(Sequence.name, index_or_partner.F, encounter, hiv_status_final.F, DateofSamplecollection) %T>%
+  summarise(is.na(.$DateofSamplecollection)) %>%
+  head(20)
+
+```
+enrollment_date is per-enrollment    
+If participants who are positive for HIV or HCV don't have a sampling date, this should be because they tested positive at a later enrollment  
+
+To do:  
+-make sure firstpositivehivtesttime_y is only for those who previously tested positive before 1st SHARP enrolement  
+-Extract year of sample collection from sampling date (note: this requires that for participants who weren't sampled at first enrollement - ie. those who tested positive later on, )
+
+number of unique participants" `r nrow(participants3)`
+
+
+Note: when finalizing analyses, go back and check for consistency (if expected) or missing variables from dropped enrollments. In some analyses, it might make sense to use or include later enrollments.  
+
+## Check for correct variable transformations
+```{r, max.height = "300px"}
+# Make dataframes of only participants with an HIV sequence and only participants from SHARP (only for chacking variable transformations)
+participants3.hiv <- participants3 %>% filter(HIV_seq_available == "Yes")
+participants3.SHARP <- participants3 %>% filter(source == "SHARP")
+
+
+
+# seqeunce available
+table(participants3[, c("source", "HIV_seq_available")], useNA = "ifany")
+
+# Sampling year
+table(year = participants3$sampling_year.F, source = participants3$source, useNA = "ifany")
+participants3 %>% filter(source == "SHARP" & HIV_seq_available == "Yes") %>% select(sampling_year.F) %>% table(useNA = "ifany")
+
+# Enrollment
+#index or partner
+table(in_index = participants3.SHARP$in_index, index_or_partner = participants3.SHARP$index_or_partner.F, useNA = "ifany") #Note: 1 indicates the entry was fro the index file
+table(in_partner = participants3.SHARP$in_partner, index_or_partner = participants3.SHARP$index_or_partner.F, useNA = "ifany")
+
+# HIV outcomes
+#status
+table(participants3[c("hiv_status_final.F", "hiv_status_final")], useNA = "ifany")
+#viral load - categorical
+table(vl = participants3.SHARP[participants3.SHARP$hiv_status_final.F == "Positive", c("hiv_vl", "hiv_vl.cat")], useNA = "ifany") %>% head()
+table(vl = participants3.SHARP[participants3.SHARP$hiv_status_final.F == "Positive", c("hiv_vl", "hiv_vl.cat")], useNA = "ifany") %>% tail()
+
+
+# HCV outcomes 
+#viral load - categorical
+table(vl = participants3.SHARP[participants3.SHARP$hcvresults_final == "Positive", c("hcv_vl", "hcv_vl.cat")], useNA = "ifany") %>% head()
+table(vl = participants3.SHARP[participants3.SHARP$hcvresults_final == "Positive", c("hcv_vl", "hcv_vl.cat")], useNA = "ifany") %>% tail()
+
+# HIV history
+#first positive test time - categorical
+table(participants3.SHARP[, c("firstpositivehivtesttime_y", "first_pos_hiv_time.cat")], useNA = "ifany")
+table(participants3.SHARP[, c("hivtestbeforepositive", "first_pos_hiv_time.cat")], useNA = "ifany")
+#first positive test date
+participants3  %>%
+  filter(hiv_status_final.F == "Positive") %>%
+  select(hivtestbeforepositive, date_HIV_diagnosis.F, years_since_HIV_diagnosis, enrollment_date, firstpositivehivtesttime_d, firstpositivehivtesttime_m, firstpositivehivtesttime_y) %>%
+  head(20) #Make sure to look at those who were and  weren't previously diagnosed
+
+
+# HCV history
+#first treatment time - categorical
+table(first_treat_time_ago_years = participants3$first_hcv_treatment_time.cat, first_treat = participants3$hcv_treatmentstarttime_y, useNA = "ifany")
+table(first_treat_time_ago_years = participants3$first_hcv_treatment_time.cat, treated = participants3$hcv_treatment, useNA = "ifany")
+#first treatment date
+participants3  %>%
+  filter(hcvresults_final == "Positive") %>%
+  select(date_first_HCV_treatment.F, years_since_first_HCV_treatment.F, hcv_treatment, enrollment_date, hcv_treatmentstarttime_d, hcv_treatmentstarttime_m, hcv_treatmentstarttime_y) %>%
+  head()
+
+# Injection drugs use
+table(ever_injected_old = participants3.SHARP$everinjecteddrugs, ever_injected_new = participants3.SHARP$everinjecteddrugs.F, useNA = "ifany")
+table(everinjecteddrugs = participants3.SHARP$everinjecteddrugs.F, index_orpartner = participants3.SHARP$index_or_partner.F)
+participants3 %>% filter(everinjecteddrugs == 0 & everinjecteddrugs.F == "Yes") %>%
+  select(c(in_index, injecttimesmonth, Sequence.name, encounter, index_or_partner.F)) #6 individuals who are listed as 0 for everinjected drugs, but are included as indexes; therefore, I assigned everinjecteddrug.F as "Yes". (I also separately confirmed they all show up in the index data). It's possible these indiviudals started injecting drugs after they were enrolled in the study
+table(participants3.SHARP[, c("activeinjector.F", "everinjecteddrugs.F")], useNA = "ifany")
+table(shared_needles_original = participants3.SHARP$shareneedles, shared_needles_new = participants3.SHARP$shareneedles.F, useNA = "ifany")
+table(participants3.SHARP[, c("activeinjector.F", "shareneedles.F")], useNA = "ifany")
+table(participants3.SHARP[, c("activeinjector.F", "partner_type_comb.F")], useNA = "ifany") #partner type and self-reported injection drug us
+table(participants3.SHARP[, c("everinjecteddrugs.F", "partner_type_comb.F")], useNA = "ifany") #56 participants report that they've never injected drugs, but were named at least once as an injecting partner
+
+
+# Key populations - note: for the variables FSW.F, MSM.F, and PWID.F, anyone not in the key population is designated NA (note: HET ALWAYS refers to not in a key population)
+#all (risk.F & risk2.F are accidentally redundant (use risk2.F becasue it is factored): SHARP participants can fall into >1 risk category, risk3.F: SHARP participants falling into >1 risk category are excluded as NA; risk4.F FSW_PWID are classified as PWID (because we have limited data to make the PWID classification) & MSM_PWID are classified as MSM, to reduce sampling bias realted to sampling most PWID from one study)
+table(participants3.hiv[, c("risk.F", "risk2.F")], useNA = "ifany")
+table(participants3.hiv[, c("risk.F", "risk3.F")], useNA = "ifany")
+table(participants3.hiv[, c("risk.F", "risk4.F")], useNA = "ifany")
+table(participants3.hiv[, c("risk2.F", "risk4.F")], useNA = "ifany")
+#FSW
+table(participants3.SHARP[, c("FSW.F", "rcdmoneysex")], useNA = "ifany")
+table(participants3.SHARP[, c("FSW.F", "sexpartners3months")], useNA = "ifany")
+table(participants3.SHARP[, c("FSW.F", "sex")], useNA = "ifany")
+table(participants3[, c("risk2.F", "FSW.F")], useNA = "ifany")
+#PWID
+table(participants3.SHARP[, c("PWID.F", "everinjecteddrugs.F")], useNA = "ifany")
+table(participants3.SHARP[, c("PWID.F", "injecttimesmonth")], useNA = "ifany")
+table(participants3.SHARP[, c("PWID.F", "injecttimesday")], useNA = "ifany")
+table(participants3[ , c("risk2.F", "PWID.F")], useNA = "ifany")
+#MSM
+table(participants3[, c("MSM.F", "sex")], useNA = "ifany")
+table(participants3[, c("MSM.F", "havesexwith")], useNA = "ifany")
+#HET
+table(participants3[participants3$sex == "Female", c("HET.F", "havesexwith")], useNA = "ifany") #females (note: because HET actually refers to "not in a key population", women who have sex with women are actually included)
+table(participants3[participants3$sex == "Male", c("HET.F", "havesexwith")], useNA = "ifany")
+table(participants3[ ,c ("risk2.F", "MSM.F")])
+```
+
+To do: Is it really the case that only 2/3063 have never injected?   
+
+
+## Variable distributions
+### Get date range for participant 
+```{r}
+#enrolement - for SHARP sequences
+range(dmy(participants3$enrollment_date), na.rm = TRUE)
+range(participants3$sampling_year.F, na.rm = TRUE)
+```
+
+
+
+
+<br><br><br>
+
+
+# 3. FILTER AND SAVE PARTICIPANT DATASETS
+
+```{r}
+#all enrollments - SHARP only
+saveRDS(participants2[participants2$source == "SHARP",],
+          "../metadata/participants_all_enrollments_SHARP.rds")
+
+#all unique individuals - combined with metadata from published seqs
+saveRDS(participants3, "../metadata/participants.rds")
+#all unique individuals - SHARP only
+saveRDS(participants3[participants3$source == "SHARP",], "../metadata/participants_SHARP.rds")
+
+#select only entries with SHARP HIV sequences
+data.SHARP_hiv <- participants3 %>%
+  filter(SHARP_hiv_seq.F == "Yes")
+saveRDS(data.SHARP_hiv, "../metadata/participants.SHARP_hiv.rds")
+
+#select only entries with SHARP HCV sequences
+data.SHARP_hcv <- participants3 %>%
+  filter(SHARP_hcv_seq.F == "Yes")
+saveRDS(data.SHARP_hcv, "../metadata/participants.SHARP_hcv.rds")
+
+```
+
+"528283064425" had an HIV sequences but has almsot entireley missing; therefore, this sequence was excluded during the alignment process  
+Change from enrollment year to DateofSamplecollection (year only?) - this will require reformatting date as yyy-MM-dd and filling in sample collection date from the relevant enrollment for NA's  
+Figure out why ptid "139646594460" ("139646594460|ThermoFisherProtocol|shipment3") is not in HIV_SHARP_and_published.seq_names (note: I added it manually for now)
+
+
+# 3. SUMMARIZE DATA
+
+### List of ptids with HIV sequences
+```{r}
+
+HIV_SHARP_and_published.seq_names <-
+  scan("../HIV/ptid_lists/hiv_4065_SHARP_and_published V4.ptids.txt", character(), sep = "\t") %>%
+  gsub("\\|.*", "", .) %>% gsub("_PRRT", "",.) %>% gsub(" (*)", "", .)
+HIV_SHARP_and_published.seq_names <- HIV_SHARP_and_published.seq_names[!grepl("D.UG|D.TZ", HIV_SHARP_and_published.seq_names)]
+  
+HIV_published.seq_names <- HIV_SHARP_and_published.seq_names[!(HIV_SHARP_and_published.seq_names %in% HIV_SHARP.seq_names)]
+
+#Are there any HIV sequences not in the merged metadata?
+HIV_SHARP_and_published.seq_names[!(HIV_SHARP_and_published.seq_names %in% c(participants3$ptid, participants3$Sequence.name))]
+
+#select only entries with sequences available
+data.hiv <- participants3 %>%
+  filter(ptid %in% HIV_SHARP_and_published.seq_names | Sequence.name %in% HIV_SHARP_and_published.seq_names)
+
+#select only entries with previously published HIV sequences
+data.published_hiv <- participants3 %>%
+  filter(Sequence.name %in% HIV_published.seq_names)
+```
+
+### SHARP data (regardless of whether sequences are avialable)
+```{r}
+
+tableby_controls <- tableby.control(
+    numeric.stats = c("Nmiss", "meansd", "medianq1q3"),
+    cat.stats = c("Nmiss", "countpct"),
+    digits = 1,
+    digits.pct = 1)
+
+table1.SHARP <- tableby(
+  ~ hiv_status_final +
+    hcvresults_final +
+    hiv_vl.cat + 
+    hiv_subtype.F + 
+    region.CN +
+    sex + 
+    index_or_partner.F + 
+    partner_type_comb.F + 
+    risk2.F +
+    everinjecteddrugs,
+  data = data.SHARP_hiv,
+  control = tableby_controls
+)
+
+summary(table1.SHARP)
+
+setwd("../results/") #This only changes the working directory within the chunk - necessary because write2Word does not accept a file path
+write2word(table1.SHARP, file = "table_1.SHARP.csv")
+```
+
+### Metadata with HIV sequences available
+```{r}
+
+#Table 1 - HIV - by region
+table1.hiv.region <- tableby(
+  region.CN ~ source + 
+    sampling_year.F +
+    hiv_status_final +
+    hcvresults_final +
+    hiv_subtype.F +
+    sex + 
+    everinjecteddrugs +
+    risk4.F,
+  data = data.hiv[!is.na(data.hiv$region.CN),],
+  control = tableby_controls
+)
+
+summary(table1.hiv.region)
+setwd("../results/") #This only changes the working directory within the chunk - necessary because write2Word does not accept a file path
+write2word(table1.hiv.region, file = "table_1_region.hiv.doc")
+
+
+#Table 1 - HIV - by risk
+table1.hiv.risk <- tableby(
+  risk4.F ~ source + 
+    sampling_year.F +
+    hiv_status_final +
+    hcvresults_final +
+    hiv_subtype.F +
+    sex + 
+    everinjecteddrugs +
+    region.CN,
+  data = data.hiv,
+  control = tableby_controls
+)
+
+summary(table1.hiv.risk)
+write2word(table1.hiv.risk, file = "table_1_risk.hiv.doc")
+
+setwd("../scripts/") #reset working directory (shouldn't matter because was only reset within chunk)
+```  
+To do: use arsenal instead (easier to include range and by-row percents in arsenal)
+
+
+
+continuous variables
+```{r}
+range(data.hiv$age, na.rm = TRUE) #Note: only have age values for SHARP data
+hist(data.hiv$age)
+
+data.hiv %>%
+  group_by(source) %>%
+  dplyr::summarize(range = range(sampling_year.F, na.rm = TRUE))
+
+ggplot(data = data.hiv, aes(x = sampling_year.F, fill = source)) +
+  geom_bar()
+
+ggplot(data = participants3[participants3$source == "SHARP" & participants3$hiv_status_final.F == "Positive",], aes(x = hiv_vl.cat)) +
+  geom_bar() + ggtitle("HIV")
+ggplot(data = participants3[participants3$source == "SHARP" & participants3$hcvresults_final == "Positive",], aes(x = hcv_vl.cat)) +
+  geom_bar() + ggtitle("HCV")
+```
+To do: stratify enrollment year histogram by source
+
+
+
+
+
+
+
+
+
+
+
+<br><br><br><br>
+
+
+# BACKUP
+## Save data formatted for BEAST
+### Save a tab-separated text file of sampling date (for now using enrollment year because it's in the right format, but should switch to sample collection date) in order to use with BEAUTi
+```{r, eval = FALSE}
+write.table(data.hiv[c("long_name", "sampling_year.F")], "../metadata/for_BEAST/sampling_year.txt", sep = "\t", col.names = FALSE, row.names = FALSE, quote = FALSE)
+
+#A1 - all (PWID only)
+#PWID_A1.all.year <- data.hiv[data.hiv$ptid %in% HIV_SHARP.A1.seq_names & !is.na(data.hiv$PWID.F), c("long_name", "sampling_year")]
+#write.table(PWID_A1.all.year, "../metadata/for_BEAST/PWID_A1_sampling_year.txt", sep = "\t", col.names = FALSE, row.names = FALSE, quote = FALSE)
+```
+
+### Save a tab-separated text file of traits - for each tree
+```{r, eval = FALSE}
+#If necessary, add date to seq_name to match Beast format
+data.hiv$Beast_name <- data.hiv$long_name
+for(i in 1:nrow(data.hiv)){
+  taxa <- data.hiv$long_name[i]
+  date <- data.hiv$sampling_year[i]
+  if(!is.na(date) & !(grepl(date, taxa))){
+    data.hiv$Beast_name[i] <- paste0(taxa, ".", date)
+  }
+}
+
+write.table(data.hiv[c("Beast_name", "region.CN", "risk")], "../metadata/for_BEAST/descrete_traits.txt", sep = "\t", col.names = c("0.255(1-0.25)5(1-0.1)5 taxa", "region", "risk"), row.names = FALSE, quote = FALSE)
+
+#D - SHARP only
+#write.table(data.hiv[data.hiv$ptid %in% HIV_SHARP.D.seq_names, c("Beast_name", "region.CN", "risk")], "../metadata/for_BEAST/descrete_traits.subtype_D.txt", sep = "\t", col.names = c("traits", "region", "risk"), row.names = FALSE, quote = FALSE)
+
+
+#A1 - SHARP only
+#write.table(data.hiv[data.hiv$ptid %in% HIV_SHARP.A1.seq_names, c("Beast_name", "region.CN", "risk")], "../metadata/for_BEAST/descrete_traits.subtype_A1.txt", sep = "\t", col.names = c("traits", "region", "risk"), row.names = FALSE, quote = FALSE)
+
+
+#A1 - all (PWID only)
+#PWID_A1.all.trait <- data.hiv[data.hiv$ptid %in% PWID_A1.seq_names & !is.na(data.hiv$IDU), c("long_name", "region.CN")]
+#write.table(PWID_A1.all.trait, "../metadata/for_BEAST/descrete_traits.subtype_A1.PWID.txt", sep = "\t", col.names = c("taxa", "region"), row.names = FALSE, quote = FALSE)
+#Save sequence list
+#write.table(PWID_A1.all.trait$long_name, "../metadata/for_BEAST/seq_names.subtype_A1.PWID.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+
+
+
+### Explore sample data
+```{r, eval = FALSE, echo = FALSE}
+table(data.hiv$Sequencing_Method)
+
+table(data.hcv$shipment, useNA = "ifany")
+
+table(data.hcv$Sequencing_Method)
+
+
+sample_summary.SHARP <- table1(
+  ~ sampling_year + 
+    lab_hcv_status +
+    hcvresults_final +
+    SHARP_hcv_seq.F +
+    hcv_vl.cat +
+    lab_hcv_pcr_success +
+    hiv_status_final +
+    lab_hiv_status +
+    SHARP_hiv_seq.F +
+    hiv_vl.cat +
+    lab_hiv_pcr_success +
+    Sequencing_Method | #is this for HIV or HCV?
+      shipment,
+  data = participants3[participants3$source == "SHARP",],
+  render.continuous = rndr_cts,
+  render.categorical = rndr_cat,
+  render.missing = NULL,
+  overall = "Total"
+)
+
+sample_summary.SHARP
+
+#write.csv(sample_summary.SHARP, file = "../metadata/sample_summary_SHARP.csv")
+
+
+#Which HCV samples are in batch 2 - and don't have sequences provided?
+batch2_hcv_missing_sequences <- participants3 %>%
+  filter(lab_hcv_status == "Positive" & shipment == "batch 2") %>%
+  select(ptid, hcv_pcr_success)
+
+write.csv(batch2_hcv_missing_sequences , file = "../hcv/troubleshoot/batch2_hcv_missing_sequences .csv")
+
+```
+
+
+<br><br><br>
+
+## Extract seperate HIV datasets based on genotype
+```{r, eval = FALSE}
+#Make separate A1, C, and D databases
+data.hiv_a1 <- data.hiv %>%
+  filter(hiv_COMET_subtype.F == "A1")
+
+data.hiv_c <- data.hiv %>%
+  filter(hiv_COMET_subtype.F == "C")
+
+data.hiv_d <- data.hiv %>%
+  filter(hiv_COMET_subtype.F == "D")
+
+write.csv(data.hiv_a1, "../metadata/participants_with_A1_hiv_seq.csv")
+write.csv(data.hiv_c, "../metadata/participants_with_C_hiv_seq.csv")
+write.csv(data.hiv_d, "../metadata/participants_with_D_hiv_seq.csv")
+
+```
+
+```{r, eval = FALSE}
+#Save a data frame with just variables of interest - this is just to make visualization easier for programs like Iceytree, in which it's hard to deal with too many variables
+data.hiv_limited_vars <- data.hiv %>%
+  select(ptid, Sequence.name, long_name, age, region.CN, hiv_COMET_subtype.F, hiv_COMET_subtype_best_guess.F, partner_type_comb.F, index_or_partner.F)
+write.csv(data.hiv_limited_vars, "../metadata/participants_with_hiv_seq_limited_vars.csv")
+```
+

@@ -1,0 +1,1151 @@
+---
+title: "discrete_trait_analysis_make_subsamples"
+author: "Hanley"
+date: "4/5/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(hablar)
+library(kableExtra)
+
+library(ggplot2)
+```
+
+# Set constants
+I suggest allowing for more subsamples for the C and D trees (the PWID sample-sizes for these subtypes are small, so it's fast to look at more subtrees AND this way more of the previously published seqeunces are incorporated into the analysis)
+```{r}
+n_subsamples_A1 <- 10 #must match n_subsamples_A1 in discrete_trait_analysis2.Rmd (I suggest, practice: 3, actual: 10)
+n_subsamples_A1.prop <- 20 #I suggest, practice: 3, actual: 10 (Ideally would do more because sample sizes are small, but run out of storage... need to drop uniform subsampling trees before running this)
+n_subsamples_C <- 30 #I suggest, practice: 3, actual: 30
+n_subsamples_D <- 30 #I suggest, practice: 3, actual: 30
+```
+
+
+
+# Prevelence of HIV by population and region 
+These will be used to inform proportionate subsampling. All counts are within Kenya  
+
+```{r}
+
+## Population Size - region
+
+Pop_Kenya <- 53000000 #Google
+Pop_Kilifi <- 1450000 #Google
+Pop_Mombasa <- 1440000 #Google
+Pop_Malindi <- 85000 #Beckerleg, 2004
+Pop_Coast <-  Pop_Kilifi + Pop_Mombasa  #Since most injection drug use occurs in the city and since we only smapled PWID from the city, should we consider only the pop of the major cities here ; Nduva, 2022: 1491423; Note: why doesn't this equal Pop_Kilifi + Pop_Mombasa (2890000)
+Pop_Nairobi <- 4397000 #Google - I'm only considring the city (not all of Nairobi county)
+
+
+## Population Size (and prevalence) - key populations
+
+#PWID
+N_PWID_Kenya <- 16000 #1600 (UNAIDS, 2021) ; 130000 (Mathers, 2008 - estimate from 2004) ; SHARP protocol suggests and upper-limit of 30000 ; NASCOP, 2016: 18327
+N_PWID_Mombasa <- 2600 #KPSE-Phase1-Final Report (2018) ; Beckerleg, 2009: 10000 ;  
+N_PWID_Kilifi <- 4300 #KPSE-Phase1-Final Report (2018) 
+N_PWID_Coast <- N_PWID_Mombasa + N_PWID_Kilifi # 3,718-8,500 (Tun, 2016) Nduva, 2022: 2,610 (Mombasa + Kilifi)
+N_PWID_Nairobi <-  5000 #KPSE-Phase1-Final Report (2018) 6,216-10,937 (Tun, 2015); 6100 (Okal, 2016)
+
+Prev_Kenya_PWID <- 0.0071 #Mathers, 2008
+Prev_Malindi_PWID <- N_PWID_Malindi * Pop_Malindi
+Prev_Coast_PWID <- (N_PWID_Coast)/(Pop_Mombasa + Pop_Malindi) #0.00675 obviously this isn't based on the whole coast, but these are the only regions for which I could find a prevalence
+
+
+#FSW
+N_SexWorkers_Kenya <- 197000 #UNAIDS, 2021 
+N_FSW_Kenya <- 168000 #KPSE-Phase1-Final Report (2018)  ; Bhattacharjee, 2019: 155000 ; NASCOP, 2019: 168000 ; NASCOP, 2016: 133675
+N_FSW_Mombasa <- 8200 #KPSE-Phase1-Final Report (2018)
+N_FSW_Kilifi <- 6700 #KPSE-Phase1-Final Report (2018)
+N_FSW_Coast <- N_FSW_Mombasa + N_FSW_Kilifi #KPSE-Phase1-Final Report (2018) ; Nuduva, 2022 & NASCOP, 2016 = 13964
+N_FSW_Nairobi <- 39600 #KPSE-Phase1-Final Report (2018) ; Okal, 2016 = 29500 
+
+#MSM
+N_MSM_Kenya <- 32600 #KPSE-Phase1-Final Report (2018) & UNAIDS, 2021 ; NASCOP, 2016: 13019
+N_MSM_Nairobi <-  10200 #KPSE-Phase1-Final Report (2018) ; Okal, 2016 = 11000; NASCOP, 2016: 10000 
+N_MSM_Mombasa <- 2850 #KPSE-Phase1-Final Report (2018)
+N_MSM_Kilifi <- 2870 #KPSE-Phase1-Final Report (2018)
+N_MSM_Coast <- N_MSM_Mombasa + N_MSM_Kilifi #NASCOP, 2016 & Nduva, 2022 = 1422
+
+
+## HIV Prevalence and case counts - all
+
+Prev_Kilifi_hiv <- 0.023 #KENPHIA, 2018 & NASCOP 2020; Kenya National AIDS Control Council, 2019: 0.056 ; Kenya HIV Estimates (2018): 0.038 (note: county estimates are from 2017) 
+Prev_Mombasa_hiv <- 0.056 #KENPHIA, 2018 & NASCOP 2020; Kenya HIV Estimates (2018): 0.041 (note: county estimates are from 2017)
+Prev_Coast_hiv <- (Prev_Kilifi_hiv*Pop_Kilifi + Prev_Mombasa_hiv*Pop_Mombasa)/(Pop_Kilifi + Pop_Mombasa)
+Prev_Nairobi_hiv <- 0.038 #KENPHIA, 2018 & NASCOP 2020; Kenya HIV Estimates (2018): 0.061 (note: county estimates are from 2017)
+Prev_Kenya_hiv <- 0.04 #UNAIDS Data 2022 (3.7-4.4)
+
+N_Kenya_hiv <- 1400000 #UNAIDS, 2021
+N_Coast_hiv <- Prev_Coast_hiv * (Pop_Kilifi+Pop_Mombasa)
+N_Nairobi_hiv <- Prev_Nairobi_hiv * Pop_Nairobi
+
+
+## HIV Prevalence and case counts - PWID 
+
+Prev_PWID_hiv_Kenya <- 0.183 #KPSE-Phase1-Final Report (2018) & Mathers, 2008 (0.43) &  Kenya National AIDS Control Council, 2019
+Prev_PWID_hiv_Coast <- 0.205 #Kurth, 2015
+Prev_PWID_hiv_Nairobi <- 0.145 #Kurth, 2015
+    
+N_PWID_hiv_Kenya <- Prev_PWID_hiv_Kenya *N_PWID_Kenya
+N_PWID_Coast_hiv <- Prev_PWID_hiv_Coast * N_PWID_Coast #4001
+N_PWID_Nairobi_hiv <- Prev_PWID_hiv_Nairobi * N_PWID_Nairobi #884.5
+
+
+## HIV Prevalence and case counts - FSW 
+
+Prev_FSW_hiv_Kenya <- 0.293 #KPSE-Phase1-Final Report (2018) & Musyoki, 2015 & Kenya AIDS response progress report, 2014 & Kenya National AIDS Control Council, 2019 - note: WARNING estimates are old and prev has likely dropped, as shown in Mombasa study
+#Prev_FSW_hiv_Mombasa <- 0.121 #Manguro, 2020 - DID NOT USE!
+#Prev_FSW_hiv_Nairobi <- 0.082 #Eshikumo, 2022 (may be some sampling bias due to enrolling at clinics) - DID NOT USE - used national prevalence instead
+
+N_FSW_hiv_Kenya <- N_FSW_Kenya * Prev_FSW_hiv_Kenya
+N_FSW_hiv_Coast <- N_FSW_Coast * Prev_FSW_hiv_Kenya #Nuduva, 2022 & NASCOP, 2016 & Kenya National AIDS Control Council, 2019
+N_FSW_hiv_Nairobi <- N_FSW_Nairobi * Prev_FSW_hiv_Kenya
+
+## HIV Prevalence and case counts 
+
+Prev_MSM_hiv_Kenya <- 0.182 #KPSE-Phase1-Final Report (2018)  & NASCOP 2010-2011 "Integrated Biological..." & Kenya National AIDS Control Council, 2019
+N_MSM_hiv_Kenya <- N_MSM_Kenya * Prev_MSM_hiv_Kenya 
+N_MSM_hiv_Coast <- Prev_MSM_hiv_Kenya * N_MSM_Coast #NSACOP, 2016 & Nduva, 2022: 256
+Prev_MSM_hiv_Coast <- N_MSM_hiv_Coast/N_MSM_Coast
+N_MSM_hiv_Nairobi <- Prev_MSM_hiv_Kenya * N_MSM_Nairobi #CAUTION: couldn't find Nairobi-specific estimates, so using Kenya prev to calculate
+
+## HIV Prevalence and case counts - HET (not in a key population)
+
+#N_HET_hiv_Kenya <- N_Kenya_hiv - N_PWID_hiv_Kenya - N_FSW_hiv_Kenya - N_MSM_hiv_Kenya
+#N_HET_hiv_Coast <- N_Coast_hiv - N_PWID_Coast_hiv - N_FSW_hiv_Coast - N_MSM_hiv_Coast
+#N_HET_hiv_Nairobi <- N_Nairobi_hiv - N_PWID_Nairobi_hiv - N_FSW_hiv_Nairobi - N_MSM_hiv_Nairobi
+
+
+
+## % - by region (ex. the % of PWID hiv cases in Nairobi (vs the Coast))
+P_Coast_hiv <- N_Coast_hiv/(N_Coast_hiv + N_Nairobi_hiv)
+P_Nairobi_hiv <- N_Nairobi_hiv/(N_Coast_hiv + N_Nairobi_hiv)
+
+P_Coast_hiv_PWID <- N_PWID_Coast_hiv/(N_PWID_Coast_hiv + N_PWID_Nairobi_hiv)
+P_Coast_hiv_FSW <- N_FSW_hiv_Coast/(N_FSW_hiv_Coast + N_FSW_hiv_Nairobi)
+P_Coast_hiv_MSM <- N_MSM_hiv_Coast/(N_MSM_hiv_Coast + N_FSW_hiv_Nairobi)
+P_Coast_hiv_HET <- N_Coast_hiv/(N_Coast_hiv + N_Nairobi_hiv)
+
+P_Nairobi_hiv_PWID <- 1 - P_Coast_hiv_PWID
+P_Nairobi_hiv_FSW <- 1 - P_Coast_hiv_FSW
+P_Nairobi_hiv_MSM <- 1 - P_Coast_hiv_MSM 
+P_Nairobi_hiv_HET <- 1 - P_Coast_hiv_HET
+
+
+## % - by population (ex. the % of adult coastal HIV cases "in" PWID (vs other pops))
+
+P_PWID_hiv <- (N_PWID_Coast_hiv + N_PWID_Nairobi_hiv) / (N_Coast_hiv + N_Nairobi_hiv)
+P_PWID_hiv_Coast <-  N_PWID_Coast_hiv / N_Coast_hiv
+P_PWID_hiv_Nairobi <- N_PWID_Nairobi_hiv / N_Nairobi_hiv
+
+P_FSW_hiv <- (N_FSW_hiv_Coast + N_FSW_hiv_Nairobi) / (N_Coast_hiv + N_Nairobi_hiv) 
+P_FSW_hiv_Coast <- N_FSW_hiv_Coast / N_Coast_hiv
+P_FSW_hiv_Nairobi <- N_FSW_hiv_Nairobi / N_Nairobi_hiv
+
+P_MSM_hiv_Kenya <- (N_MSM_hiv_Coast + N_MSM_hiv_Nairobi) / (N_Coast_hiv + N_Nairobi_hiv)
+P_MSM_hiv_Coast <- N_MSM_hiv_Coast / N_Coast_hiv 
+P_MSM_hiv_Nairobi <- N_MSM_hiv_Nairobi / N_Nairobi_hiv
+
+P_HET_hiv <- 1 - P_PWID_hiv - P_FSW_hiv - P_MSM_hiv_Kenya
+P_HET_hiv_Coast <-  1 - P_PWID_hiv_Coast - P_FSW_hiv_Coast - P_MSM_hiv_Coast 
+P_HET_hiv_Nairobi <- 1 - P_PWID_hiv_Nairobi - P_FSW_hiv_Nairobi - P_MSM_hiv_Nairobi
+
+
+# % by population and region
+P_PWIDandNairobi_hiv <- P_PWID_hiv_Nairobi*P_Nairobi_hiv
+P_nonPWIDandNairobi_hiv <- (1-P_PWID_hiv_Nairobi)*P_Nairobi_hiv
+P_PWIDandCoast_hiv <- P_PWID_hiv_Coast*P_Coast_hiv
+P_nonPWIDandCoast_hiv <- (1-P_PWID_hiv_Coast)*P_Coast_hiv
+region_risk_comb_pop_sizes <- c(
+  "P_nonPWIDandCoast_hiv" = P_nonPWIDandCoast_hiv,
+  "P_nonPWIDandNairobi_hiv" = P_nonPWIDandNairobi_hiv,
+  "P_PWIDandCoast_hiv" = P_PWIDandCoast_hiv,
+  "P_PWIDandNairobi_hiv" = P_PWIDandNairobi_hiv)
+#Save
+saveRDS(region_risk_comb_pop_sizes, "../HIV/pop_size_counts/region_risk_comb_pop_sizes.rds")
+
+
+P_PWIDandNairobi_hiv + P_nonPWIDandNairobi_hiv + P_PWIDandCoast_hiv + P_nonPWIDandCoast_hiv #check - should be 1
+```
+
+TO DO: add citations  
+TO DO: subtract childhood cases from total Nairobi and Coast counts  
+
+
+## Plot pop sizes
+```{r}
+#Living with HIV
+kenya_hiv_PopSizes.C <- data.frame(
+  population = c("FSW","MSM", "PWID"),
+  PopSize = c(N_FSW_hiv_Coast, N_MSM_hiv_Coast, N_PWID_Coast_hiv),
+  Region = "Coast", group = "Coast - living with HIV",
+  Percent = c(paste0(round(100*N_FSW_hiv_Coast/N_FSW_Coast,1), "%*"),
+              paste0(round(100*N_MSM_hiv_Coast/N_MSM_Coast,1), "%*"),
+              paste0(round(100*N_PWID_Coast_hiv/N_PWID_Coast,1), "%")))
+
+kenya_hiv_PopSizes.N <- data.frame(
+  population = c("FSW", "MSM", "PWID"),
+  PopSize = c(N_FSW_hiv_Nairobi, N_MSM_hiv_Nairobi, N_PWID_Nairobi_hiv),
+  Region = "Nairobi", group = "Nairobi - living with HIV",
+  Percent = c(paste0(round(100*N_FSW_hiv_Nairobi/N_FSW_Nairobi,1), "%*"),
+              paste0(round(100*N_MSM_hiv_Nairobi/N_MSM_Nairobi,1), "%*"),
+              paste0(round(100*N_PWID_Nairobi_hiv/N_PWID_Nairobi,1), "%")))
+
+# Population size
+kenya_PopSizes.C <- data.frame(
+  population = c("FSW", "MSM", "PWID"),
+  PopSize = c(N_FSW_Coast, N_MSM_Coast, N_PWID_Coast),
+  Region = "Coast", group = "Coast",
+  Percent = c("","",""))
+
+
+kenya_PopSizes.N <- data.frame(
+  population = c("FSW","MSM", "PWID"),
+  PopSize = c(N_FSW_Nairobi, N_MSM_Nairobi, N_PWID_Nairobi),
+  Region = "Nairobi", group = "Nairobi",
+  Percent = c("","",""))
+
+
+kenya_PopSizes <- rbind(kenya_PopSizes.N, kenya_PopSizes.C, kenya_hiv_PopSizes.N, kenya_hiv_PopSizes.C)
+
+
+
+popSizes.plot <- ggplot(kenya_PopSizes) +
+  geom_bar(aes(x = population, y = PopSize, fill = group), position = "identity", stat = "identity") + 
+  theme_minimal() + 
+  facet_wrap(~Region) +
+  geom_text(aes(x = population, y = PopSize, label= Percent), vjust = -1.5, color = "black", size = 3) +
+  labs(fill = "Population", 
+       x = "Key Population", y = "estimated population size") +
+  scale_fill_manual(values = c( "purple1", "purple4", "gold3", "tan4")) +
+  theme(text = element_text(size = 16),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        axis.title.x = element_text(size = 17),
+        axis.title.y = element_text(size = 17),
+        strip.text = element_text(size = 17),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "bottom") +
+  ggtitle("Estimated size of key populations\n(living with and without HIV)")
+popSizes.plot 
+ggsave(popSizes.plot, file = "./../results/HIV/pop_sizes.png")
+
+
+```
+
+
+## FUNCTION: Get trait frequency tables
+To get the number of sequences that should be included in each trait group based on the desired % distribution
+```{r}
+find_subsample_counts <- function(data, trait1, cats1, percents1, trait2, cats2, percents2, useminfreq1 = TRUE, uniform = TRUE) {
+  #percents1 is the desired percent in each category of cats1 (must add approximately to 1 (some leway allowed for rounding))
+  #percents2 is the desired percent in each category of cats2. If cats2 percents differ by cats1 (for example, the distribution of HIV cases among key pops differs between Coast vs Nairobi), percents2 can be provided as a dataframe with rownames matching cats1, where each row sums to approximately 1
+  #default assumption is that trait 1 (rows) are uniformly subsampled, so an error will result if row sums aren't equal. For proportionate subsampling, use unifrom = FALSE
+  
+  # drop any categories not of interest
+  data <- data %>% filter(get(trait1) %in% cats1 & get(trait2) %in% cats2)
+  
+  # Compute the expected counts for each combination of categories
+  if(is.vector(percents2)){
+    #check
+    if (abs(sum(percents1) - 1) > 0.01 | abs(sum(percents2) - 1) > 0.01) { #check that the percents sum to 1 +/- 0.01
+      warning("Percents1 and percents2 must both (seperately) add up to approximately 1.")
+    }
+    expected_percents <- outer(percents1, percents2, "*") #create a dataframe of expected percents in each category
+    rownames(expected_percents) <- cats1
+    colnames(expected_percents) <- cats2
+  } else{ #If percents are already provided as a dataframe 
+    #check
+    if (abs(sum(percents1) - 1) > 0.01 | any(apply(percents2, 1, function(x) abs(sum(x) - 1) > 0.01))) { #check that the percents sum to 1 +/- 0.01
+      warning("Percents1 and percents2 must add up to approximately 1. Percents2 was provided as a table, so each row of the table should (seperately) sum to 1")
+    }
+    expected_percents <- apply(percents2, 2, function(x) x * percents1) #multiply by percents1 to get expected percent in each category comination of cats1 & cats2 (now the whole dataframe should sum to 1)
+    colnames(expected_percents) <- cats2
+  }
+  
+  #check
+  if(!(round(sum(expected_percents), 2) == 1)){
+    warning("Expected_percents should sum to 1 but does not!")
+  }
+  
+  # Compute the actual counts for each combination of categories
+  actual_counts <- table(data[,c(trait1, trait2)])
+  
+  # Calculate max count for each category combination (what percent of total sequences should fall into each category?). (not all categories will have sufficient sample sizes to match max count)
+  max_counts <- sum(actual_counts) * expected_percents
+ 
+  # Scale expected counts
+  scale_factor <- min(s(actual_counts/max_counts)) #whichever category combination has the lowest actual count as a percent of max count constrains how many samples we can use from the rest of the data
+  scale_factor_group <- rownames(actual_counts/max_counts)[which(actual_counts/max_counts == scale_factor, arr.ind = TRUE)[1, 1]]
+  counts_pre_round <- max_counts * scale_factor
+  
+  
+  #Optional: change any 0 values to 1 (the next step will readjsut counts to still sum to 1 across rows for uniform subsampling)
+  if(any(round(counts_pre_round) == 0 & useminfreq1 == TRUE)){ #if useminfreq1 is TRUE, convert any 0 freqs to 1
+    counts_pre_round[round(counts_pre_round) == 0] <- 1
+  }
+  
+
+  #adjust counts to ensure uniform subsampling is maintained after rounding (if desired)
+  if(uniform == TRUE){ #for uniform subsampling, we need the row sums to match and they may differ slightly if we just round to the nearest whole number
+    for(i in 1:nrow(counts_pre_round)){
+      while(sum(round(counts_pre_round[i,], 0)) < sum(round(counts_pre_round[scale_factor_group,], 0))){ #if the sum of the row (after rounding) is > the sum for the target row
+    # Find the index of the value with the largest remainder and use ceiling rounding
+        
+        col.index <- which.max(counts_pre_round[i,]%%1) #find largest remainder
+        counts_pre_round[i, col.index] <- counts_pre_round[i, col.index] + 1 #add 1, usually this is the equivalent of ceiling rounding, although in odd cases (ex. if multiple 0 values were converted to 1, we may end up increasing a value more than once)
+        }
+      while(sum(round(counts_pre_round[i,], 0)) > sum(round(counts_pre_round[scale_factor_group,], 0))){ #if the sum of the row (after rounding) is < the sum for the target row
+    # Find the index of the value with the smallest remainder and use floor rounding
+        remainder <- counts_pre_round[i,]%%1
+        eligable_cols <- which(remainder != 0 & counts_pre_round[i,] >1)
+        col.index <- eligable_cols[which.min(remainder[eligable_cols])] #find smallest remainder
+        counts_pre_round[i , col.index] <- counts_pre_round[i, col.index] - 1 #subtract 1 (usually this is the equivalent of floor-rounding the value)
+        }
+    }
+  }
+  
+
+  #round all values
+  counts <- round(counts_pre_round, 0)
+  
+
+  #check
+  if(length(unique(rowSums(counts))) != 1 & uniform == TRUE){ #check all rows sum to the same value
+    stop("Row counts aren't equal")
+  }
+         
+  
+  # convert to a dataframe
+  counts <- as.data.frame.table(counts) %>%
+    `colnames<-`(c(trait1, trait2, "Freq"))
+  
+  return(counts)
+}
+
+
+# EXAMPLE - population percents are the same for all regions (region is samples uniformly and trait is sampled proportionately)
+example.meta <- readRDS("../HIV/meta_tree.hiv.C.rds") 
+uniform_region_prop_trait.example <- find_subsample_counts(
+  data = example.meta,
+  trait1 = "region.CN", cats1 = c("Coast", "Nairobi"),
+  percents1 = c(0.5, 0.5),
+  trait2 = "risk4.F", cats2 = c("FSW", "HET", "MSM","PWID"),
+  percents2 = c(0.05, 0.9, 0.02,  0.03)
+)
+uniform_region_prop_trait.example 
+
+# EXAMPLE - separate population percents by region (region is samples uniformly and trait is sampled proportionately, but region-specific proportions are used)
+uniform_region_prop_trait.example2 <- find_subsample_counts(
+  data = example.meta,
+  trait1 = "region.CN", cats1 = c("Coast", "Nairobi"),
+  percents1 = c(0.5, 0.5),
+  trait2 = "risk4.F", cats2 = c("FSW", "HET", "MSM", "PWID"),
+  percents2 = t(data.frame(Coast = c(0.05,  0.90, 0.02,0.03), Nairobi = c(0.04, 0.91, 0.03, 0.02)))
+)
+uniform_region_prop_trait.example2
+```
+
+TO DO: add a warning if a 0 count is coerced to 1
+
+
+
+### FUNCTION: subsampling
+```{r uniform subsampling function}
+get_downsampled_seqs2 <-  function(metadata, downsample, seqs = NULL){
+    #downsample is a table with one or 2 columns of traits and a column "Freq" indicating counts to include for each category (or category combination) of those traits
+  #seqs are all the seqeucne names (in the tree) eligable for inclusion in the downsampled tree (ie. the tip labels for the current tree)). If none are provided, all leaves from metadata will be used
+  
+  if(is.null(seqs)){
+    seqs <- metadata[!is.na(metadata$source),]$label
+  }
+  
+  trait1 <- colnames(downsample)[1]
+  if(ncol(downsample) > 2) { trait2 <- colnames(downsample)[2] }
+  
+  downsampled <- c()
+  
+  for(i in 1:nrow(downsample)){
+    category1 <- downsample[i,1]
+    if(ncol(downsample) > 2) {
+      category2 <- downsample[i,2]
+      }
+    count <- downsample$Freq[i]
+    
+    downsampled.category <- metadata %>% 
+      filter(get(trait1) == category1 & label %in% seqs) %>%
+      filter(if(ncol(downsample) > 2) get(trait2) == category2 else TRUE) %>%
+      pull(label) %>%
+      sample(size = count, replace = FALSE)
+    
+    downsampled <- append(downsampled, downsampled.category)
+  }
+
+  # CHECK
+  if(!(sum(downsample$Freq) == length(downsampled))){
+    stop(paste("Failed to select the expected number of sequecnes. ",
+               sum(downsample$Freq), "seqeunces were included in downsample table but",
+               length(downsampled), "were selected"))
+  }
+  
+  return(downsampled)
+}
+
+
+# EXAMPLE
+downsampled_ptids <- get_downsampled_seqs2(example.meta, downsample = uniform_region_prop_trait.example)
+str(downsampled_ptids)
+```
+
+
+
+
+
+
+# EXTRACT SUBSAMPLES
+
+
+## ALL SUBTYPES
+
+
+### Read in data 
+```{r tree data}
+# SHARP only
+tree.SHARP_hiv.all <- readRDS("../HIV/tree.SHARP_hiv.rds") #tree data object
+tree.SHARP_hiv.all.meta <- readRDS("../HIV/meta_tree.SHARP_hiv.rds") #metadata with info about tree 
+
+# SHARP and published
+tree.hiv.all <- readRDS("../HIV/tree.hiv.CN.rds") #tree data object
+tree.hiv.all.meta <- readRDS("../HIV/meta_tree.hiv.CN.rds") #metadata with info about tree 
+```  
+
+
+### Extract samples based on region & risk group prevelences - Uniform subsampling
+Under uniform subsampling, we take equal counts from each region (regional trends analysis) or risk group (risk group analysis). Therefore, we're limited by the smallest population sample. I'm attempting to  represent categories not analysed (risk group or region) proportionate to their frequencies.
+```{r}
+# Uniform sub-sampling - region   (note: I will subsample risk proportionately)
+
+### Uniform sub-sampling - region - SHARP
+SHARP_min_region_count.all <- min(table(tree.SHARP_hiv.all.meta[,"region.CN"]))
+Uniform_region_SHARP.all <- as.data.frame(table(tree.SHARP_hiv.all.meta[,"region.CN"]))
+Uniform_region_SHARP.all$Freq <- as.numeric(c(SHARP_min_region_count.all, SHARP_min_region_count.all))
+Uniform_region_SHARP.all
+
+### Uniform sub-sampling risk and region (combined)
+Uniform_regionrisk.all <- find_subsample_counts(data = tree.hiv.all.meta,
+  trait1 = "PWID_region.comb",
+  cats1 = c("nonPWID_Coast", "nonPWID_Nairobi", "PWID_Coast", "PWID_Nairobi"),
+            percents1 = c(0.25, 0.25, 0.25, 0.25),
+            trait2 = "risk4.F", cats2 = c("FSW", "HET", "MSM", "PWID"),
+            percents2 = t(data.frame(
+              nonPWID_Coast = proportions(c(P_FSW_hiv_Coast, P_HET_hiv_Coast, P_MSM_hiv_Coast, 0)),
+              nonPWID_Nairobi = proportions(c(P_FSW_hiv_Nairobi, P_HET_hiv_Nairobi, P_MSM_hiv_Nairobi, 0)),
+              PWID_Coast = c(0,0,0,1),
+              PWID_Nairobi = c(0,0,0,1))),
+  useminfreq1 = FALSE)
+Uniform_regionrisk.all
+
+### Uniform region - all
+Uniform_region.all <- find_subsample_counts(data = tree.hiv.all.meta,
+  trait1 = "region.CN", cats1 = c("Coast", "Nairobi"),
+                      percents1 = c(0.5, 0.5),
+            trait2 = "risk4.F", cats2 = c("FSW", "HET", "MSM", "PWID"),
+            percents2 = t(data.frame(Coast = c(P_FSW_hiv_Coast, P_HET_hiv_Coast, P_MSM_hiv_Coast, P_PWID_hiv_Coast),
+                                     Nairobi = c(P_FSW_hiv_Nairobi, P_HET_hiv_Nairobi, P_MSM_hiv_Nairobi, P_PWID_hiv_Nairobi)))
+  )
+Uniform_region.all 
+
+# Uniform sub-sampling - risk
+
+### Uniform risk - all
+Uniform_risk.all <- find_subsample_counts(data = tree.hiv.all.meta,
+  trait1 = "risk4.F", cats1 = c("FSW", "HET", "MSM", "PWID"),
+                      percents1 = c(0.25, 0.25, 0.25, 0.25),
+            trait2 =  "region.CN", cats2 = c("Coast", "Nairobi"),
+            percents2 = t(data.frame(FSW = c(P_Coast_hiv_PWID, P_Nairobi_hiv_PWID),
+                                     HET = c(P_Coast_hiv_HET, P_Nairobi_hiv_HET),
+                                     MSM = c(P_Coast_hiv_MSM, P_Nairobi_hiv_MSM),
+                                     PWID = c(P_Coast_hiv_PWID, P_Nairobi_hiv_PWID)))
+  )
+Uniform_risk.all 
+
+
+# Proportionate sub-sampling - region and risk - SHARP
+max_counts.all <- floor(sum(table(tree.SHARP_hiv.all.meta[,"region.CN"]))*c(P_Coast_hiv_PWID, P_Nairobi_hiv_PWID))
+scale_factor.all <- min(table(tree.SHARP_hiv.all.meta[,"region.CN"])/max_counts.all)
+counts.all <- round(max_counts.all*scale_factor.all, 0)
+proportionate_region_SHARP.all <- as.data.frame(table(tree.SHARP_hiv.all.meta[,"region.CN"]))
+proportionate_region_SHARP.all$Freq <- counts.all
+proportionate_region_SHARP.all
+
+
+# Proportionate sub-sampling - all (region and risk)
+Proportionate_regionrisk.all <- find_subsample_counts(data = tree.hiv.all.meta,
+  trait1 = "region.CN", cats1 = c("Coast", "Nairobi"), percents1 = c(P_Coast_hiv, P_Nairobi_hiv),
+            trait2 = "risk4.F", cats2 = c("FSW", "HET", "MSM", "PWID"),
+            percents2 = t(data.frame(Coast = c(P_FSW_hiv_Coast, P_HET_hiv_Coast, P_MSM_hiv_Coast, P_PWID_hiv_Coast),
+                                     Nairobi = c(P_FSW_hiv_Nairobi, P_HET_hiv_Nairobi, P_MSM_hiv_Nairobi,  P_PWID_hiv_Nairobi))),
+  uniform = FALSE
+  )
+Proportionate_regionrisk.all
+
+
+# Proportionate sub-sampling - all (region and risk combined)
+Proportionate_regionrisk2.all <- find_subsample_counts(data = tree.hiv.all.meta,
+  trait1 = "PWID_region.comb",
+  cats1 = c("nonPWID_Coast", "nonPWID_Nairobi", "PWID_Coast", "PWID_Nairobi"),
+            percents1 = region_risk_comb_pop_sizes,
+            trait2 = "risk4.F", cats2 = c("FSW", "HET", "MSM", "PWID"),
+            percents2 = t(data.frame(
+              nonPWID_Coast = proportions(c(P_FSW_hiv_Coast, P_HET_hiv_Coast, P_MSM_hiv_Coast, 0)),
+              nonPWID_Nairobi = proportions(c(P_FSW_hiv_Nairobi, P_HET_hiv_Nairobi, P_MSM_hiv_Nairobi, 0)),
+              PWID_Coast = c(0,0,0,1),
+              PWID_Nairobi = c(0,0,0,1))),
+  useminfreq1 = FALSE, uniform = FALSE)
+Proportionate_regionrisk2.all
+
+
+
+# Save all tables together
+
+subsample_table.list.all <- list(
+  kable(Uniform_region_SHARP.all, caption = "Uniform region (SHARP only) - Uniform_region_SHARP"),
+  kable(Uniform_regionrisk.all, caption = "Uniform region and risk (combined var) - Uniform_regionrisk"),
+  kable(Uniform_region.all, caption = "Uniform region - Uniform_region"),
+  kable(Uniform_risk.all, caption = "Uniform risk - Uniform_risk"),
+  kable(proportionate_region_SHARP.all, caption = "Proportionate region (SHARP only) - proportionate_region_SHARP"),
+  kable(Proportionate_regionrisk.all, caption = "Proportionate region and risk - Proportionate_regionrisk"),
+  kable(Proportionate_regionrisk2.all, caption = "Proportionate region and risk (combined var) - Proportionate_regionrisk2"))
+
+
+subsample_table.kable.all <- kable_styling(
+  kable(
+    paste(subsample_table.list.all, collapse = "<br>"),
+    format = "html", escape = FALSE))
+
+save_kable(subsample_table.kable.all, file = "../HIV/subsampled_seq_lists/all_subsample_table_counts.html", title = "subsample counts")
+
+
+```
+
+
+## Extract filtered sequence_names lists 
+```{r}
+# Single vectors
+
+set.seed(18)
+Uniform_region_SHARP.all.seqs <- get_downsampled_seqs2(metadata = tree.SHARP_hiv.all.meta,
+                                                    downsample = Uniform_region_SHARP.all)
+write.table(Uniform_region_SHARP.all.seqs, "../HIV/subsampled_seq_lists/Uniform_region_SHARP.all.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_region_SHARP.all.seqs, "../HIV/subsampled_seq_lists/Uniform_region_SHARP.all.seqs.rds")
+
+set.seed(18)
+Uniform_regionrisk.all.seqs <- get_downsampled_seqs2(metadata = tree.hiv.all.meta,
+                                                    downsample = Uniform_regionrisk.all)
+write.table(Uniform_regionrisk.all.seqs, "../HIV/subsampled_seq_lists/Uniform_regionrisk.all.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_regionrisk.all.seqs, "../HIV/subsampled_seq_lists/Uniform_regionrisk.all.seqs.rds")
+
+set.seed(18)
+Uniform_region.all.seqs <- get_downsampled_seqs2(metadata = tree.hiv.all.meta,
+                                                    downsample = Uniform_region.all)
+write.table(Uniform_region.all.seqs, "../HIV/subsampled_seq_lists/Uniform_region.all.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_region.all.seqs, "../HIV/subsampled_seq_lists/Uniform_region.all.seqs.rds")
+
+set.seed(18)
+Uniform_risk.all.seqs <- get_downsampled_seqs2(metadata = tree.hiv.all.meta,
+                                                    downsample = Uniform_risk.all)
+write.table(Uniform_risk.all.seqs, "../HIV/subsampled_seq_lists/Uniform_risk.all.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_risk.all.seqs, "../HIV/subsampled_seq_lists/Uniform_risk.all.seqs.rds")
+
+set.seed(18)
+proportionate_region_SHARP.all.seqs <- get_downsampled_seqs2(metadata = tree.SHARP_hiv.all.meta,
+                                                    downsample = proportionate_region_SHARP.all)
+write.table(proportionate_region_SHARP.all.seqs, "../HIV/subsampled_seq_lists/proportionate_region_SHARP.all.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(proportionate_region_SHARP.all.seqs, "../HIV/subsampled_seq_lists/proportionate_region_SHARP.all.seqs.rds")
+
+set.seed(18)
+Proportionate_regionrisk.all.seqs <- get_downsampled_seqs2(metadata = tree.hiv.all.meta,
+                                                    downsample = Proportionate_regionrisk.all)
+write.table(Proportionate_regionrisk.all.seqs, "../HIV/subsampled_seq_lists/Proportionate_regionrisk.all.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Proportionate_regionrisk.all.seqs, "../HIV/subsampled_seq_lists/Proportionate_regionrisk.all.seqs.rds")
+
+set.seed(18)
+Proportionate_regionrisk2.all.seqs <- get_downsampled_seqs2(metadata = tree.hiv.all.meta,
+                                                    downsample = Proportionate_regionrisk2.all)
+write.table(Proportionate_regionrisk2.all.seqs, "../HIV/subsampled_seq_lists/Proportionate_regionrisk2.all.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Proportionate_regionrisk2.all.seqs, "../HIV/subsampled_seq_lists/Proportionate_regionrisk2.all.seqs.rds")
+
+
+
+# Vector lists
+
+set.seed(18)
+Uniform_region_SHARP.all.seqs.list <- replicate(n_subsamples_A1, get_downsampled_seqs2(metadata = tree.SHARP_hiv.all.meta,
+                                                    downsample = Uniform_region_SHARP.all), simplify = FALSE)
+write.table(Uniform_region_SHARP.all.seqs.list, "../HIV/subsampled_seq_lists/Uniform_region_SHARP.all.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_region_SHARP.all.seqs.list, "../HIV/subsampled_seq_lists/Uniform_region_SHARP.all.seqs.list.rds")
+
+set.seed(18)
+Uniform_regionrisk.all.seqs.list <- replicate(n_subsamples_A1, get_downsampled_seqs2(metadata = tree.hiv.all.meta,
+                                                    downsample = Uniform_regionrisk.all), simplify = FALSE)
+write.table(Uniform_regionrisk.all.seqs.list, "../HIV/subsampled_seq_lists/Uniform_regionrisk.all.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_regionrisk.all.seqs.list, "../HIV/subsampled_seq_lists/Uniform_regionrisk.all.seqs.list.rds")
+
+
+set.seed(18)
+Uniform_region.all.seqs.list <- replicate(n_subsamples_A1, get_downsampled_seqs2(metadata = tree.hiv.all.meta,
+                                                    downsample = Uniform_region.all), simplify = FALSE)
+write.table(Uniform_region.all.seqs.list, "../HIV/subsampled_seq_lists/Uniform_region.all.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_region.all.seqs.list, "../HIV/subsampled_seq_lists/Uniform_region.all.seqs.list.rds")
+
+set.seed(18)
+Uniform_risk.all.seqs.list <- replicate(n_subsamples_A1, get_downsampled_seqs2(metadata = tree.hiv.all.meta,
+                                                    downsample = Uniform_risk.all), simplify = FALSE)
+write.table(Uniform_risk.all.seqs.list, "../HIV/subsampled_seq_lists/Uniform_risk.all.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_risk.all.seqs.list, "../HIV/subsampled_seq_lists/Uniform_risk.all.seqs.list.rds")
+
+set.seed(18)
+proportionate_region_SHARP.all.seqs.list <- replicate(n_subsamples_A1.prop, get_downsampled_seqs2(metadata = tree.SHARP_hiv.all.meta,
+                                                    downsample = proportionate_region_SHARP.all), simplify = FALSE)
+write.table(proportionate_region_SHARP.all.seqs.list, "../HIV/subsampled_seq_lists/proportionate_region_SHARP.all.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(proportionate_region_SHARP.all.seqs.list, "../HIV/subsampled_seq_lists/proportionate_region_SHARP.all.seqs.list.rds")
+
+set.seed(18)
+Proportionate_regionrisk.all.seqs.list <- replicate(n_subsamples_A1.prop, get_downsampled_seqs2(metadata = tree.hiv.all.meta,
+                                                    downsample = Proportionate_regionrisk.all), simplify = FALSE)
+write.table(Proportionate_regionrisk.all.seqs.list, "../HIV/subsampled_seq_lists/Proportionate_regionrisk.all.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Proportionate_regionrisk.all.seqs.list, "../HIV/subsampled_seq_lists/Proportionate_regionrisk.all.seqs.list.rds")
+
+set.seed(18)
+Proportionate_regionrisk2.all.seqs.list <- replicate(n_subsamples_A1.prop, get_downsampled_seqs2(metadata = tree.hiv.all.meta,
+                                                    downsample = Proportionate_regionrisk2.all), simplify = FALSE)
+write.table(Proportionate_regionrisk2.all.seqs.list, "../HIV/subsampled_seq_lists/Proportionate_regionrisk2.all.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Proportionate_regionrisk2.all.seqs.list, "../HIV/subsampled_seq_lists/Proportionate_regionrisk2.all.seqs.list.rds")
+
+
+```
+
+
+# Drop all subtype variables
+```{r}
+drop.all <- ls()[grepl(".all",ls())]
+rm(drop.all)
+```
+
+
+
+
+
+## SUBTYPE A
+
+
+### Read in data 
+```{r tree data}
+# SHARP only
+tree.SHARP_hiv.A1 <- readRDS("../HIV/tree.SHARP_hiv.A1.rds") #tree data object
+tree.SHARP_hiv.A1.meta <- readRDS("../HIV/meta_tree.SHARP_hiv.A1.rds") #metadata with info about tree 
+
+# SHARP and published
+tree.hiv.A1 <- readRDS("../HIV/tree.hiv.CN.A1.rds") #tree data object
+tree.hiv.A1.meta <- readRDS("../HIV/meta_tree.hiv.CN.A1.rds") #metadata with info about tree 
+```  
+
+
+### Extract samples based on region & risk group prevelences - Uniform subsampling
+Under uniform subsampling, we take equal counts from each region (regional trends analysis) or risk group (risk group analysis). Therefore, we're limited by the smallest population sample. I'm attempting to  represent categories not analysed (risk group or region) proportionate to their frequencies.
+```{r}
+# Uniform sub-sampling - region   (note: I will subsample risk proportionately)
+
+### Uniform sub-sampling - region - SHARP
+SHARP_min_region_count.A1 <- min(table(tree.SHARP_hiv.A1.meta[,"region.CN"]))
+Uniform_region_SHARP.A1 <- as.data.frame(table(tree.SHARP_hiv.A1.meta[,"region.CN"]))
+Uniform_region_SHARP.A1$Freq <- as.numeric(c(SHARP_min_region_count.A1, SHARP_min_region_count.A1))
+Uniform_region_SHARP.A1
+
+### Uniform sub-sampling risk and region (combined)
+Uniform_regionrisk.A1 <- find_subsample_counts(data = tree.hiv.A1.meta,
+  trait1 = "PWID_region.comb",
+  cats1 = c("nonPWID_Coast", "nonPWID_Nairobi", "PWID_Coast", "PWID_Nairobi"),
+            percents1 = c(0.25, 0.25, 0.25, 0.25),
+            trait2 = "risk4.F", cats2 = c("FSW", "HET", "MSM", "PWID"),
+            percents2 = t(data.frame(
+              nonPWID_Coast = proportions(c(P_FSW_hiv_Coast, P_HET_hiv_Coast, P_MSM_hiv_Coast, 0)),
+              nonPWID_Nairobi = proportions(c(P_FSW_hiv_Nairobi, P_HET_hiv_Nairobi, P_MSM_hiv_Nairobi, 0)),
+              PWID_Coast = c(0,0,0,1),
+              PWID_Nairobi = c(0,0,0,1))),
+  useminfreq1 = FALSE)
+Uniform_regionrisk.A1
+
+### Uniform region - all
+Uniform_region.A1 <- find_subsample_counts(data = tree.hiv.A1.meta,
+  trait1 = "region.CN", cats1 = c("Coast", "Nairobi"),
+                      percents1 = c(0.5, 0.5),
+            trait2 = "risk4.F", cats2 = c("FSW", "HET", "MSM", "PWID"),
+            percents2 = t(data.frame(Coast = c(P_FSW_hiv_Coast, P_HET_hiv_Coast, P_MSM_hiv_Coast, P_PWID_hiv_Coast),
+                                     Nairobi = c(P_FSW_hiv_Nairobi, P_HET_hiv_Nairobi, P_MSM_hiv_Nairobi, P_PWID_hiv_Nairobi)))
+  )
+Uniform_region.A1 
+
+# Uniform sub-sampling - risk
+
+### Uniform risk - all
+Uniform_risk.A1 <- find_subsample_counts(data = tree.hiv.A1.meta,
+  trait1 = "risk4.F", cats1 = c("FSW", "HET", "MSM", "PWID"),
+                      percents1 = c(0.25, 0.25, 0.25, 0.25),
+            trait2 =  "region.CN", cats2 = c("Coast", "Nairobi"),
+            percents2 = t(data.frame(FSW = c(P_Coast_hiv_PWID, P_Nairobi_hiv_PWID),
+                                     HET = c(P_Coast_hiv_HET, P_Nairobi_hiv_HET),
+                                     MSM = c(P_Coast_hiv_MSM, P_Nairobi_hiv_MSM),
+                                     PWID = c(P_Coast_hiv_PWID, P_Nairobi_hiv_PWID)))
+  )
+Uniform_risk.A1 
+
+
+# Proportionate sub-sampling - region and risk - SHARP
+max_counts.A1 <- floor(sum(table(tree.SHARP_hiv.A1.meta[,"region.CN"]))*c(P_Coast_hiv_PWID, P_Nairobi_hiv_PWID))
+scale_factor.A1 <- min(table(tree.SHARP_hiv.A1.meta[,"region.CN"])/max_counts.A1)
+counts.A1 <- round(max_counts.A1*scale_factor.A1, 0)
+proportionate_region_SHARP.A1 <- as.data.frame(table(tree.SHARP_hiv.A1.meta[,"region.CN"]))
+proportionate_region_SHARP.A1$Freq <- counts.A1
+proportionate_region_SHARP.A1
+
+
+# Proportionate sub-sampling - all (region and risk)
+Proportionate_regionrisk.A1 <- find_subsample_counts(data = tree.hiv.A1.meta,
+  trait1 = "region.CN", cats1 = c("Coast", "Nairobi"), percents1 = c(P_Coast_hiv, P_Nairobi_hiv),
+            trait2 = "risk4.F", cats2 = c("FSW", "HET", "MSM", "PWID"),
+            percents2 = t(data.frame(Coast = c(P_FSW_hiv_Coast, P_HET_hiv_Coast, P_MSM_hiv_Coast, P_PWID_hiv_Coast),
+                                     Nairobi = c(P_FSW_hiv_Nairobi, P_HET_hiv_Nairobi, P_MSM_hiv_Nairobi,  P_PWID_hiv_Nairobi))),
+  uniform = FALSE
+  )
+Proportionate_regionrisk.A1
+
+
+# Proportionate sub-sampling - all (region and risk combined)
+Proportionate_regionrisk2.A1 <- find_subsample_counts(data = tree.hiv.A1.meta,
+  trait1 = "PWID_region.comb",
+  cats1 = c("nonPWID_Coast", "nonPWID_Nairobi", "PWID_Coast", "PWID_Nairobi"),
+            percents1 = region_risk_comb_pop_sizes,
+            trait2 = "risk4.F", cats2 = c("FSW", "HET", "MSM", "PWID"),
+            percents2 = t(data.frame(
+              nonPWID_Coast = proportions(c(P_FSW_hiv_Coast, P_HET_hiv_Coast, P_MSM_hiv_Coast, 0)),
+              nonPWID_Nairobi = proportions(c(P_FSW_hiv_Nairobi, P_HET_hiv_Nairobi, P_MSM_hiv_Nairobi, 0)),
+              PWID_Coast = c(0,0,0,1),
+              PWID_Nairobi = c(0,0,0,1))),
+  useminfreq1 = FALSE, uniform = FALSE)
+Proportionate_regionrisk2.A1
+
+
+
+# Save all tables together
+
+subsample_table.list.A1 <- list(
+  kable(Uniform_region_SHARP.A1, caption = "Uniform region (SHARP only) - Uniform_region_SHARP"),
+  kable(Uniform_regionrisk.A1, caption = "Uniform region and risk (combined var) - Uniform_regionrisk"),
+  kable(Uniform_region.A1, caption = "Uniform region - Uniform_region"),
+  kable(Uniform_risk.A1, caption = "Uniform risk - Uniform_risk"),
+  kable(proportionate_region_SHARP.A1, caption = "Proportionate region (SHARP only) - proportionate_region_SHARP"),
+  kable(Proportionate_regionrisk.A1, caption = "Proportionate region and risk - Proportionate_regionrisk"),
+  kable(Proportionate_regionrisk2.A1, caption = "Proportionate region and risk (combined var) - Proportionate_regionrisk2"))
+
+
+subsample_table.kable.A1 <- kable_styling(
+  kable(
+    paste(subsample_table.list.A1, collapse = "<br>"),
+    format = "html", escape = FALSE))
+
+save_kable(subsample_table.kable.A1, file = "../HIV/subsampled_seq_lists/A1_subsample_table_counts.html", title = "subsample counts")
+
+
+```
+
+
+## Extract filtered sequence_names lists 
+```{r}
+# Single seq vectors
+
+set.seed(18)
+Uniform_region_SHARP.A1.seqs <- get_downsampled_seqs2(metadata = tree.SHARP_hiv.A1.meta,
+                                                    downsample = Uniform_region_SHARP.A1)
+write.table(Uniform_region_SHARP.A1.seqs, "../HIV/subsampled_seq_lists/Uniform_region_SHARP.A1.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_region_SHARP.A1.seqs, "../HIV/subsampled_seq_lists/Uniform_region_SHARP.A1.seqs.rds")
+
+set.seed(18)
+Uniform_regionrisk.A1.seqs <- get_downsampled_seqs2(metadata = tree.hiv.A1.meta,
+                                                    downsample = Uniform_regionrisk.A1)
+write.table(Uniform_regionrisk.A1.seqs, "../HIV/subsampled_seq_lists/Uniform_regionrisk.A1.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_regionrisk.A1.seqs, "../HIV/subsampled_seq_lists/Uniform_regionrisk.A1.seqs.rds")
+
+set.seed(18)
+Uniform_region.A1.seqs <- get_downsampled_seqs2(metadata = tree.hiv.A1.meta,
+                                                    downsample = Uniform_region.A1)
+write.table(Uniform_region.A1.seqs, "../HIV/subsampled_seq_lists/Uniform_region.A1.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_region.A1.seqs, "../HIV/subsampled_seq_lists/Uniform_region.A1.seqs.rds")
+
+set.seed(18)
+Uniform_risk.A1.seqs <- get_downsampled_seqs2(metadata = tree.hiv.A1.meta,
+                                                    downsample = Uniform_risk.A1)
+write.table(Uniform_risk.A1.seqs, "../HIV/subsampled_seq_lists/Uniform_risk.A1.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_risk.A1.seqs, "../HIV/subsampled_seq_lists/Uniform_risk.A1.seqs.rds")
+
+set.seed(18)
+proportionate_region_SHARP.A1.seqs <- get_downsampled_seqs2(metadata = tree.SHARP_hiv.A1.meta,
+                                                    downsample = proportionate_region_SHARP.A1)
+write.table(proportionate_region_SHARP.A1.seqs, "../HIV/subsampled_seq_lists/proportionate_region_SHARP.A1.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(proportionate_region_SHARP.A1.seqs, "../HIV/subsampled_seq_lists/proportionate_region_SHARP.A1.seqs.rds")
+
+set.seed(18)
+Proportionate_regionrisk.A1.seqs <- get_downsampled_seqs2(metadata = tree.hiv.A1.meta,
+                                                    downsample = Proportionate_regionrisk.A1)
+write.table(Proportionate_regionrisk.A1.seqs, "../HIV/subsampled_seq_lists/Proportionate_regionrisk.A1.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Proportionate_regionrisk.A1.seqs, "../HIV/subsampled_seq_lists/Proportionate_regionrisk.A1.seqs.rds")
+
+set.seed(18)
+Proportionate_regionrisk2.A1.seqs <- get_downsampled_seqs2(metadata = tree.hiv.A1.meta,
+                                                    downsample = Proportionate_regionrisk2.A1)
+write.table(Proportionate_regionrisk2.A1.seqs, "../HIV/subsampled_seq_lists/Proportionate_regionrisk2.A1.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Proportionate_regionrisk2.A1.seqs, "../HIV/subsampled_seq_lists/Proportionate_regionrisk2.A1.seqs.rds")
+
+
+
+# Vector lists
+
+set.seed(18)
+Uniform_region_SHARP.A1.seqs.list <- replicate(n_subsamples_A1, get_downsampled_seqs2(metadata = tree.SHARP_hiv.A1.meta,
+                                                    downsample = Uniform_region_SHARP.A1), simplify = FALSE)
+write.table(Uniform_region_SHARP.A1.seqs.list, "../HIV/subsampled_seq_lists/Uniform_region_SHARP.A1.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_region_SHARP.A1.seqs.list, "../HIV/subsampled_seq_lists/Uniform_region_SHARP.A1.seqs.list.rds")
+
+set.seed(18)
+Uniform_regionrisk.A1.seqs.list <- replicate(n_subsamples_A1, get_downsampled_seqs2(metadata = tree.hiv.A1.meta,
+                                                    downsample = Uniform_regionrisk.A1), simplify = FALSE)
+write.table(Uniform_regionrisk.A1.seqs.list, "../HIV/subsampled_seq_lists/Uniform_regionrisk.A1.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_regionrisk.A1.seqs.list, "../HIV/subsampled_seq_lists/Uniform_regionrisk.A1.seqs.list.rds")
+
+
+set.seed(18)
+Uniform_region.A1.seqs.list <- replicate(n_subsamples_A1, get_downsampled_seqs2(metadata = tree.hiv.A1.meta,
+                                                    downsample = Uniform_region.A1), simplify = FALSE)
+write.table(Uniform_region.A1.seqs.list, "../HIV/subsampled_seq_lists/Uniform_region.A1.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_region.A1.seqs.list, "../HIV/subsampled_seq_lists/Uniform_region.A1.seqs.list.rds")
+
+set.seed(18)
+Uniform_risk.A1.seqs.list <- replicate(n_subsamples_A1, get_downsampled_seqs2(metadata = tree.hiv.A1.meta,
+                                                    downsample = Uniform_risk.A1), simplify = FALSE)
+write.table(Uniform_risk.A1.seqs.list, "../HIV/subsampled_seq_lists/Uniform_risk.A1.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_risk.A1.seqs.list, "../HIV/subsampled_seq_lists/Uniform_risk.A1.seqs.list.rds")
+
+set.seed(18)
+proportionate_region_SHARP.A1.seqs.list <- replicate(n_subsamples_A1.prop, get_downsampled_seqs2(metadata = tree.SHARP_hiv.A1.meta,
+                                                    downsample = proportionate_region_SHARP.A1), simplify = FALSE)
+write.table(proportionate_region_SHARP.A1.seqs.list, "../HIV/subsampled_seq_lists/proportionate_region_SHARP.A1.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(proportionate_region_SHARP.A1.seqs.list, "../HIV/subsampled_seq_lists/proportionate_region_SHARP.A1.seqs.list.rds")
+
+set.seed(18)
+Proportionate_regionrisk.A1.seqs.list <- replicate(n_subsamples_A1.prop, get_downsampled_seqs2(metadata = tree.hiv.A1.meta,
+                                                    downsample = Proportionate_regionrisk.A1), simplify = FALSE)
+write.table(Proportionate_regionrisk.A1.seqs.list, "../HIV/subsampled_seq_lists/Proportionate_regionrisk.A1.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Proportionate_regionrisk.A1.seqs.list, "../HIV/subsampled_seq_lists/Proportionate_regionrisk.A1.seqs.list.rds")
+
+set.seed(18)
+Proportionate_regionrisk2.A1.seqs.list <- replicate(n_subsamples_A1.prop, get_downsampled_seqs2(metadata = tree.hiv.A1.meta,
+                                                    downsample = Proportionate_regionrisk2.A1), simplify = FALSE)
+write.table(Proportionate_regionrisk2.A1.seqs.list, "../HIV/subsampled_seq_lists/Proportionate_regionrisk2.A1.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Proportionate_regionrisk2.A1.seqs.list, "../HIV/subsampled_seq_lists/Proportionate_regionrisk2.A1.seqs.list.rds")
+
+
+```
+
+
+# Drop A1 variables
+```{r}
+drop.A1 <- ls()[grepl(".A1",ls())]
+rm(drop.A1)
+```
+
+
+
+
+
+
+
+
+
+
+## SUBTYPE C
+For subtypes C and D, will only do SHARP&published and uniform subsampling (population sized are too small for SHARP-only and/or uniform subsampling) and 
+
+### Read in data 
+```{r tree data}
+# SHARP and published
+tree.hiv.C <- readRDS("../HIV/tree.hiv.CN.C.rds") #tree data object
+tree.hiv.C.meta <- readRDS("../HIV/meta_tree.hiv.CN.C.rds") #metadata with info about tree 
+```  
+
+
+### Extract samples based on region & risk group prevelences - Uniform subsampling
+Under uniform subsampling, we take equal counts from each region (regional trends analysis) or risk group (risk group analysis). Therefore, we're limited by the smallest population sample. I'm attempting to  represent categories not analysed (risk group or region) proportionate to their frequencies.
+```{r}
+# Uniform sub-sampling - region   (note: I will subsample risk proportionately)
+
+
+### Uniform sub-sampling risk and region (combined)
+Uniform_regionrisk.C <- find_subsample_counts(data = tree.hiv.C.meta,
+  trait1 = "PWID_region.comb",
+  cats1 = c("nonPWID_Coast", "nonPWID_Nairobi", "PWID_Coast", "PWID_Nairobi"),
+            percents1 = c(0.25, 0.25, 0.25, 0.25),
+            trait2 = "risk4.F", cats2 = c("FSW", "HET", "MSM", "PWID"),
+            percents2 = t(data.frame(
+              nonPWID_Coast = proportions(c(P_FSW_hiv_Coast, P_HET_hiv_Coast, P_MSM_hiv_Coast, 0)),
+              nonPWID_Nairobi = proportions(c(P_FSW_hiv_Nairobi, P_HET_hiv_Nairobi, P_MSM_hiv_Nairobi, 0)),
+              PWID_Coast = c(0,0,0,1),
+              PWID_Nairobi = c(0,0,0,1))),
+  useminfreq1 = FALSE)
+Uniform_regionrisk.C
+
+
+### Uniform region - all
+Uniform_region.C <- find_subsample_counts(data = tree.hiv.C.meta,
+  trait1 = "region.CN", cats1 = c("Coast", "Nairobi"),
+                      percents1 = c(0.5, 0.5),
+            trait2 = "risk4.F", cats2 = c("FSW", "HET", "MSM", "PWID"),
+            percents2 = t(data.frame(Coast = c(P_FSW_hiv_Coast, P_HET_hiv_Coast, P_MSM_hiv_Coast, P_PWID_hiv_Coast),
+                                     Nairobi = c(P_FSW_hiv_Nairobi, P_HET_hiv_Nairobi, P_MSM_hiv_Nairobi, P_PWID_hiv_Nairobi)))
+  )
+Uniform_region.C 
+
+
+# Uniform sub-sampling - risk
+
+### Uniform risk - all
+Uniform_risk.C <- find_subsample_counts(data = tree.hiv.C.meta,
+  trait1 = "risk4.F", cats1 = c("FSW", "HET", "MSM", "PWID"),
+                      percents1 = c(0.25, 0.25, 0.25, 0.25),
+            trait2 =  "region.CN", cats2 = c("Coast", "Nairobi"),
+            percents2 = t(data.frame(FSW = c(P_Coast_hiv_PWID, P_Nairobi_hiv_PWID),
+                                     HET = c(P_Coast_hiv_HET, P_Nairobi_hiv_HET),
+                                     MSM = c(P_Coast_hiv_MSM, P_Nairobi_hiv_MSM),
+                                     PWID = c(P_Coast_hiv_PWID, P_Nairobi_hiv_PWID)))
+  )
+Uniform_risk.C 
+
+
+
+# Save all tables together
+
+subsample_table.list.C <- list(
+  kable(Uniform_regionrisk.C, caption = "Uniform region and risk (combined var) - Uniform_regionrisk"),
+  kable(Uniform_region.C, caption = "Uniform region - Uniform_region"),
+  kable(Uniform_risk.C, caption = "Uniform risk - Uniform_risk"))
+
+
+subsample_table.kable.C <- kable_styling(
+  kable(
+    paste(subsample_table.list.C, collapse = "<br>"),
+    format = "html", escape = FALSE))
+
+save_kable(subsample_table.kable.C, file = "../HIV/subsampled_seq_lists/C_subsample_table_counts.html", title = "subsample counts")
+
+
+```
+
+
+## Extract filtered sequence_names lists 
+```{r}
+# Single seq vectors
+
+set.seed(18)
+Uniform_regionrisk.C.seqs <- get_downsampled_seqs2(metadata = tree.hiv.C.meta,
+                                                    downsample = Uniform_regionrisk.C)
+write.table(Uniform_regionrisk.C.seqs, "../HIV/subsampled_seq_lists/Uniform_regionrisk.C.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_regionrisk.C.seqs, "../HIV/subsampled_seq_lists/Uniform_regionrisk.C.seqs.rds")
+
+set.seed(18)
+Uniform_region.C.seqs <- get_downsampled_seqs2(metadata = tree.hiv.C.meta,
+                                                    downsample = Uniform_region.C)
+write.table(Uniform_region.C.seqs, "../HIV/subsampled_seq_lists/Uniform_region.C.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_region.C.seqs, "../HIV/subsampled_seq_lists/Uniform_region.C.seqs.rds")
+
+set.seed(18)
+Uniform_risk.C.seqs <- get_downsampled_seqs2(metadata = tree.hiv.C.meta,
+                                                    downsample = Uniform_risk.C)
+write.table(Uniform_risk.C.seqs, "../HIV/subsampled_seq_lists/Uniform_risk.C.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_risk.C.seqs, "../HIV/subsampled_seq_lists/Uniform_risk.C.seqs.rds")
+
+
+
+# Vector lists
+
+set.seed(18)
+Uniform_regionrisk.C.seqs.list <- replicate(n_subsamples_C, get_downsampled_seqs2(metadata = tree.hiv.C.meta,
+                                                    downsample = Uniform_regionrisk.C), simplify = FALSE)
+write.table(Uniform_regionrisk.C.seqs.list, "../HIV/subsampled_seq_lists/Uniform_regionrisk.C.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_regionrisk.C.seqs.list, "../HIV/subsampled_seq_lists/Uniform_regionrisk.C.seqs.list.rds")
+
+
+set.seed(18)
+Uniform_region.C.seqs.list <- replicate(n_subsamples_C, get_downsampled_seqs2(metadata = tree.hiv.C.meta,
+                                                    downsample = Uniform_region.C), simplify = FALSE)
+write.table(Uniform_region.C.seqs.list, "../HIV/subsampled_seq_lists/Uniform_region.C.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_region.C.seqs.list, "../HIV/subsampled_seq_lists/Uniform_region.C.seqs.list.rds")
+
+set.seed(18)
+Uniform_risk.C.seqs.list <- replicate(n_subsamples_C, get_downsampled_seqs2(metadata = tree.hiv.C.meta,
+                                                    downsample = Uniform_risk.C), simplify = FALSE)
+write.table(Uniform_risk.C.seqs.list, "../HIV/subsampled_seq_lists/Uniform_risk.C.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_risk.C.seqs.list, "../HIV/subsampled_seq_lists/Uniform_risk.C.seqs.list.rds")
+
+
+```
+
+
+# Drop C variables
+```{r}
+drop.C <- ls()[grepl(".C",ls())]
+rm(drop.C)
+```
+
+
+
+
+
+
+
+
+
+
+## SUBTYPE D
+For subtypes C and D, will only do SHARP&published and uniform subsampling (population sized are too small for SHARP-only and/or uniform subsampling) and 
+
+### Read in data 
+```{r tree data}
+# SHARP and published
+tree.hiv.D <- readRDS("../HIV/tree.hiv.CN.D.rds") #tree data object
+tree.hiv.D.meta <- readRDS("../HIV/meta_tree.hiv.CN.D.rds") #metadata with info about tree 
+```  
+
+
+### Extract samples based on region & risk group prevelences - Uniform subsampling
+Under uniform subsampling, we take equal counts from each region (regional trends analysis) or risk group (risk group analysis). Therefore, we're limited by the smallest population sample. I'm attempting to  represent categories not analysed (risk group or region) proportionate to their frequencies.
+```{r}
+# Uniform sub-sampling - region   (note: I will subsample risk proportionately)
+
+
+### Uniform sub-sampling risk and region (combined)
+Uniform_regionrisk.D <- find_subsample_counts(data = tree.hiv.D.meta,
+  trait1 = "PWID_region.comb",
+  cats1 = c("nonPWID_Coast", "nonPWID_Nairobi", "PWID_Coast", "PWID_Nairobi"),
+            percents1 = c(0.25, 0.25, 0.25, 0.25),
+            trait2 = "risk4.F", cats2 = c("FSW", "HET", "MSM", "PWID"),
+            percents2 = t(data.frame(
+              nonPWID_Coast = proportions(c(P_FSW_hiv_Coast, P_HET_hiv_Coast, P_MSM_hiv_Coast, 0)),
+              nonPWID_Nairobi = proportions(c(P_FSW_hiv_Nairobi, P_HET_hiv_Nairobi, P_MSM_hiv_Nairobi, 0)),
+              PWID_Coast = c(0,0,0,1),
+              PWID_Nairobi = c(0,0,0,1))),
+  useminfreq1 = FALSE)
+Uniform_regionrisk.D
+
+
+### Uniform region - all
+Uniform_region.D <- find_subsample_counts(data = tree.hiv.D.meta,
+  trait1 = "region.CN", cats1 = c("Coast", "Nairobi"),
+                      percents1 = c(0.5, 0.5),
+            trait2 = "risk4.F", cats2 = c("FSW", "HET", "MSM", "PWID"),
+            percents2 = t(data.frame(Coast = c(P_FSW_hiv_Coast, P_HET_hiv_Coast, P_MSM_hiv_Coast, P_PWID_hiv_Coast),
+                                     Nairobi = c(P_FSW_hiv_Nairobi, P_HET_hiv_Nairobi, P_MSM_hiv_Nairobi, P_PWID_hiv_Nairobi)))
+  )
+Uniform_region.D 
+
+
+# Uniform sub-sampling - risk
+
+### Uniform risk - all
+Uniform_risk.D <- find_subsample_counts(data = tree.hiv.D.meta,
+  trait1 = "risk4.F", cats1 = c("FSW", "HET", "MSM", "PWID"),
+                      percents1 = c(0.25, 0.25, 0.25, 0.25),
+            trait2 =  "region.CN", cats2 = c("Coast", "Nairobi"),
+            percents2 = t(data.frame(FSW = c(P_Coast_hiv_PWID, P_Nairobi_hiv_PWID),
+                                     HET = c(P_Coast_hiv_HET, P_Nairobi_hiv_HET),
+                                     MSM = c(P_Coast_hiv_MSM, P_Nairobi_hiv_MSM),
+                                     PWID = c(P_Coast_hiv_PWID, P_Nairobi_hiv_PWID)))
+  )
+Uniform_risk.D 
+
+
+
+# Save all tables together
+
+subsample_table.list.D <- list(
+  kable(Uniform_regionrisk.D, caption = "Uniform region and risk (combined var) - Uniform_regionrisk"),
+  kable(Uniform_region.D, caption = "Uniform region - Uniform_region"),
+  kable(Uniform_risk.D, caption = "Uniform risk - Uniform_risk"))
+
+
+subsample_table.kable.D <- kable_styling(
+  kable(
+    paste(subsample_table.list.D, collapse = "<br>"),
+    format = "html", escape = FALSE))
+
+save_kable(subsample_table.kable.D, file = "../HIV/subsampled_seq_lists/D_subsample_table_counts.html", title = "subsample counts")
+
+
+```
+
+
+## Extract filtered sequence_names lists 
+```{r}
+# Single seq vectors
+
+set.seed(18)
+Uniform_regionrisk.D.seqs <- get_downsampled_seqs2(metadata = tree.hiv.D.meta,
+                                                    downsample = Uniform_regionrisk.D)
+write.table(Uniform_regionrisk.D.seqs, "../HIV/subsampled_seq_lists/Uniform_regionrisk.D.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_regionrisk.D.seqs, "../HIV/subsampled_seq_lists/Uniform_regionrisk.D.seqs.rds")
+
+set.seed(18)
+Uniform_region.D.seqs <- get_downsampled_seqs2(metadata = tree.hiv.D.meta,
+                                                    downsample = Uniform_region.D)
+write.table(Uniform_region.D.seqs, "../HIV/subsampled_seq_lists/Uniform_region.D.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_region.D.seqs, "../HIV/subsampled_seq_lists/Uniform_region.D.seqs.rds")
+
+set.seed(18)
+Uniform_risk.D.seqs <- get_downsampled_seqs2(metadata = tree.hiv.D.meta,
+                                                    downsample = Uniform_risk.D)
+write.table(Uniform_risk.D.seqs, "../HIV/subsampled_seq_lists/Uniform_risk.D.seqs.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_risk.D.seqs, "../HIV/subsampled_seq_lists/Uniform_risk.D.seqs.rds")
+
+
+
+# Vector lists
+
+set.seed(18)
+Uniform_regionrisk.D.seqs.list <- replicate(n_subsamples_D, get_downsampled_seqs2(metadata = tree.hiv.D.meta,
+                                                    downsample = Uniform_regionrisk.D), simplify = FALSE)
+write.table(Uniform_regionrisk.D.seqs.list, "../HIV/subsampled_seq_lists/Uniform_regionrisk.D.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_regionrisk.D.seqs.list, "../HIV/subsampled_seq_lists/Uniform_regionrisk.D.seqs.list.rds")
+
+
+set.seed(18)
+Uniform_region.D.seqs.list <- replicate(n_subsamples_D, get_downsampled_seqs2(metadata = tree.hiv.D.meta,
+                                                    downsample = Uniform_region.D), simplify = FALSE)
+write.table(Uniform_region.D.seqs.list, "../HIV/subsampled_seq_lists/Uniform_region.D.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_region.D.seqs.list, "../HIV/subsampled_seq_lists/Uniform_region.D.seqs.list.rds")
+
+set.seed(18)
+Uniform_risk.D.seqs.list <- replicate(n_subsamples_D, get_downsampled_seqs2(metadata = tree.hiv.D.meta,
+                                                    downsample = Uniform_risk.D), simplify = FALSE)
+write.table(Uniform_risk.D.seqs.list, "../HIV/subsampled_seq_lists/Uniform_risk.D.seqs.list.tsv", quote = FALSE, row.names = FALSE, col.names = FALSE)
+saveRDS(Uniform_risk.D.seqs.list, "../HIV/subsampled_seq_lists/Uniform_risk.D.seqs.list.rds")
+
+
+```
+
+
+# Drop D variables
+```{r}
+drop.D <- ls()[grepl(".D",ls())]
+rm(drop.D)
+```

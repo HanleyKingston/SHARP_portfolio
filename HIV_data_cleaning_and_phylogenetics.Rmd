@@ -1,0 +1,1590 @@
+#THIS IS VERY MESSY AND I DON"T RECOMEND FOLLOWING AS AN EXEMPLAR. I AM WORKING ON BREAKING IT DOWN INTO SEPERATE SCRIPTS.
+
+---
+title: "HCV_phylogenetic"
+author: "Hanley"
+date: "8/3/2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+options(digits = 3) ## Formats output to 3 digits
+```
+
+# Load libraries and set working directory  
+I need to figure out which of these I'm actually using
+```{r, warning=FALSE, message=FALSE}
+library(dplyr)
+library(plyr)
+library(lubridate)
+library(haven)
+library(data.table)
+library(tibble)
+library(table1)
+
+library(ape)
+library(seqinr)
+library(phangorn)
+library(phytools)
+
+library(ggplot2)
+#library(ggmsa)
+library(ggtree)
+library(tidytree)
+library(ggimage)
+library(treeio)
+
+library(igraph)
+library(purrr)
+
+library(Biostrings)
+
+library(geiger)
+library(phangorn)
+library(phylobase)
+library(remotes)
+```
+
+```{r, color pallete, echo = FALSE}
+my_colors <- c("#89C5DA", "#DA5724", "#74D944", "#CE50CA", "#3F4921", "#C0717C", "#CBD588", "#5F7FC7", "#673770", "#D3D93E", "#38333E", "#508578", "#D7C1B1", "#689030", "#AD6F3B", "#CD9BCD", "#D14285", "#6DDE88", "#652926", "#7FDCC0", "#C84248", "#8569D5", "#5E738F", "#D1A33D", "#8A7C64", "#599861")
+```
+
+# FUNCTIONS
+```{r, extract ptids from a fasta file as a vector, echo = FALSE}
+#Useful for getting a list of ptids that have associated sequences - note: be sure to check that incomplete or not usable sequences are excluded before saving sequence list
+#Takes a .csv file - a data frame with a single column containing sequence names - saved from Geneious (click export -> choose CSV -> select only "Name" to export)
+get_seq_names <- function(file_name) {
+  seq_names <- read.csv(file_name, header = TRUE) %>%
+    dplyr::transmute(Name = gsub("\\|.*", "", Name)) %>%
+    pull("Name")
+  return(seq_names)
+}
+```
+
+```{r, prest formatting arguments for table1e, echo = FALSE}
+#render.continuous
+rndr_cts = function(x) {
+    with(stats.default(x),
+         sprintf("%0.1f (%0.1f, %0.1f)", MEDIAN, Q1, Q3))
+}
+
+#render.categorical
+rndr_cat = function(x) {
+    c("", sapply(stats.default(x), function(y) with(y,
+        sprintf("%d (%0.1f%%)", FREQ, PCT))))
+}
+```
+
+```{r, cluster by patristic distance, echo = FALSE}
+#define function (uses igraph and network graphing) to define clusters based on a patristic distance threshold
+cluster_by_patristic_distance <- function(tree, min_size = 2, threshold = 0.2) {
+    patristic.dist <- ape::cophenetic.phylo(tree)
+    adj_mat <- patristic.dist <= threshold
+    cluster_graph <- igraph::graph_from_adjacency_matrix(adj_mat, mode="undirected", diag=FALSE)
+    components <- igraph::components(cluster_graph)
+    retain_assignments <- purrr::keep(components$membership, ~ components$csize[.x] >= min_size)
+    clusters <- tibble(sequence_name = names(retain_assignments), cluster = retain_assignments)
+  return(clusters)
+}
+```
+
+# METADATA
+
+# Read in data and format
+
+## Sequence data
+
+### Get a list of ptids that have sequences
+```{r}
+seq_ptid.hiv <- get_seq_names("./HIV/Nucleotide alignment_original order_trimmed_no gaps_trimmed2_seq rm_names_only.csv")
+
+head(seq_ptid.hiv)
+```
+Number of HIV sequences: `r length(seq_ptid.hiv)`
+
+
+## Sample data
+```{r}
+#sample data
+samples.all <- read.csv("./metadata/raw/SHARPMaster DB_15th Sept 2021.csv")
+
+#Look at index/partner variable
+table(samples.all$IndexorPartner, useNA = "ifany")
+#I'm, going to re-derive this variable based on the index and partners tables
+
+samples <- samples.all %>%
+  dplyr::rename("ptid" = "ï..ptid") %>%
+  #Note: another package seems to load plyr, and rename will otherwise default to that and not work, if this is trobulesome, change the order dplyr and plyr are loaded
+  mutate(
+    #Correct inconsistencies in how indexes and partners are reported - note: did not actually end up using this variable
+     IndexorPartner = case_when(
+       IndexorPartner == "Index " ~ "Index",
+       IndexorPartner == "partner" ~ "Partner",
+       TRUE ~ as.character(IndexorPartner)),
+    Samplecode = as.character(Samplecode),
+    #Fix inconsistency in HIV subtype
+    hiv_subtype.F = ifelse(hiv_subtype == "A1 ", "A1", hiv_subtype))
+nrow(samples)
+```
+
+## Partner data
+```{r}
+#partner data / metadata
+partners <- read.csv("./metadata/raw/sharp_partner_master_data.csv")
+
+table(partners$IndexorPartner, useNA = "ifany") #This variable is not correct (most people are missing - I will create myself)
+table(in_index = partners$in_index, in_partners = partners$in_partner)
+
+# Participants can be included up to 3 times as partners. Compair different enrolements for the ame participant
+#How do rows with the same ptid differ? - show FALSE for any column that don't match
+as.data.frame(t(partners[partners$ptid == 111659578254,][1,] == partners[partners$ptid == 111659578254,][2,])) %>% #compare the first 2 rows with the same ptid
+  filter(.[,1] == FALSE)
+as.data.frame(t(partners[partners$ptid == 111659578254,][1,] == partners[partners$ptid == 111659578254,][2,])) %>% #compare the first 2 rows with the same ptid
+  filter(.[,1] == FALSE)
+```
+entries in partner dataframe: `r nrow(partners)`  
+number of unique partners: `r length(unique(partners))`  
+partners without enrollment dates: `r sum(is.na(partners$enrollment_date))`
+
+## Index data
+```{r}
+indexes <- read.csv("./metadata/raw/sharp_index_master_data.csv")
+#set everinjecteddrugs to 1 for all indexes (enrollement criteria)
+indexes$everinjecteddrugs <- 1
+```
+number of indexes: `r nrow(indexes)`  
+indexes without enrollment dates: `r sum(is.na(indexes$enrollment_date))`  
+duplicated indexes: `r `sum(duplicated(indexes$ptid))`
+
+
+## Clean participant data
+### Compair date variables
+```{r}
+#add a column that indicates which table the entry is originally from
+partners$source <- "partners"
+indexes$source <- "indexes"
+
+#Examine various date variables
+participants_date <- rbind.fill(indexes[indexes$ptid %in% seq_ptid.hiv, c("ptid", "test_date", "er_date", "fl_date", "enrollment_date", "source")], partners[partners$ptid %in% seq_ptid.hiv, c("ptid", "test_date", "DateofSamplecollection", "er_date", "pe_date", "sc_date", "fl_date", "enrollment_date", "source")])
+participants_date.df <- participants_date[order(participants_date$ptid),]
+head(participants_date.df)
+```
+
+### combine partner and index data
+```{r}
+participants <- rbind.fill(partners, indexes)
+```
+total entries in participant file: `r nrow(participants)`
+
+### Explore variables
+```{r}
+#Look at index_or_partner variables
+table(participants$IndexorPartner, useNA ="ifany")
+#^ This variable is mostly empty so won't use
+
+table(participants$in_index, useNA ="ifany")
+#0-1 codes, no missing
+table(participants$in_partner, useNA ="ifany")
+#this is a numeric variable indicating the number of times the individual was named as a partner. No missing values
+
+#Are number of enrollments / partner counts correct?
+head(merge(
+  partners[partners$ptid %in% seq_ptid.hiv, c("ptid", "in_index", "in_partner", "test_date")],
+  indexes[indexes$ptid %in% seq_ptid.hiv, c("ptid", "in_index", "in_partner", "test_date")], by = c("ptid", "test_date"), all.x = TRUE, all.y = TRUE, suffix = c(".partner_file",".index_file")))
+
+#Look at date variables
+#confirm all dates are in the expected format - this will print any that aren't
+participants$enrollment_date[!grepl("[0-9]{2}[a-z]{3}[0-9]{4}", participants$enrollment_date)]
+```
+**partner counts / partner type**  
+There are some inconsistencies in the partner counts between partner and index files (sometimes the count is 1 lower in the index file) - this probably doesn't matter because I am going to use 0-1 coding. I will use whichever value matches the most recent entry  
+Note: there is no partner-type column in the index data, so I need to make sure that if the index enrollment is used for an individual that any partner-type value is copied over  
+**dates**  
+will sort by enrollment date and keep entiries for earliest enrollment date   
+confirmed that all enrollement dates are in the expected format: *[0-9]{4}-[0-9]{2}-[0-9]{2}*  
+number of missing enrollment dates: `r sum(is.na(participants$enrollment_date))`  
+
+
+### Aggregate index_ptid (index who named partner) and partner_type columns accross all enrollements
+```{r}
+#Combine index_ptids (the index who named the partner) for each entry into a single column, that way these aren't lost when selecting only 1 entry per partner
+#Note: if want to keep as a list (instead of collapse into a string, replace paste0 with c)
+agg <- aggregate(index_ptid~ptid, data = participants, paste0, collapse=";")
+participants_agg <- merge(participants, agg, by = "ptid", all = T)
+colnames(participants_agg) <- c(colnames(participants), "index_ptids.F")
+
+#Combine partner_type for each partner entry into a single column, that way these aren't lost when selecting only 1 entry per ptid - this code is a bit messy (will try to find a neater way to do this)
+agg2 <- aggregate(partner_type~ptid, data = participants_agg, paste0, collapse = ";") %>%
+  mutate(
+    partner_type2 = case_when(
+      grepl("Injecting|injecting", partner_type) & grepl("Sexual|sexual", partner_type) ~ "Sexual&Injecting",
+      grepl("Injecting", partner_type) ~ "Injecting",
+      grepl("Sexual", partner_type) ~ "Sexual"),
+    )
+participants_agg2 <- merge(participants_agg, agg2[,c("ptid", "partner_type2")], by = "ptid", all = T)
+colnames(participants_agg2) <- c(colnames(participants_agg), "partner_type_comb.F")
+
+#Compare old to new (aggregated) columns
+head(participants_agg2[,c("ptid", "index_ptid", "index_ptids.F", "partner_type", "partner_type_comb.F")])
+```
+
+### limit participants data to 1 entry per individual
+```{r}
+participants2 <- participants_agg2 %>%
+  mutate(
+    #Index file uses 1 to indicate in_index, convert this to "Yes" to match formatting in partners data
+    in_index = case_when(
+      in_index == 1 ~ "Yes",
+      TRUE ~ in_index
+    ),
+    #make an index_or_partner variable that combines the in_index and in_partner columns
+    index_or_partner.F = case_when(
+      #Note: in_index variable is binary but in_partner variable is a count of the number of times in the partner dataset
+      in_index == "Yes" & in_partner == 0 ~ "index",
+      in_index == "No" & in_partner != 0 ~ "partner",
+      in_index == "Yes" & in_partner != 0  ~ "index_and_partner"),
+    #hiv_status has some blank entries, if these ptids are indexes, we can assume hiv status is positive, otherwise they should be NA
+    hiv_status_final.F = case_when(
+      hiv_status_final == "" & in_index == "Yes" ~ "Positive",
+      hiv_status_final == "" & in_index != "Yes" ~ "NA",
+      TRUE ~ hiv_status_final
+    )) %>%
+  #Select only the most recent enrollemnt date
+  group_by(ptid) %>%
+  #sort by enrollment date (format DDmYYYY) - note: arrange is able to recognize this format
+  arrange(dplyr::desc(dmy(enrollment_date))) %>%
+  #keep only the entry for the first (earliest) enrollment date
+  dplyr::slice(1L)
+```
+number of unique participants" `r nrow(participants2)`
+
+
+Note: when finalizing analyses, go back and check for consistency (if expected) or missing variables from dropped enrollments. In some analyses, it might make sense to use or include later enrollments.  
+
+
+**Note: .F = final column (for use in analysis)**
+
+### Save participant dataset
+```{r}
+write.csv(participants2, "./metadata/participants.csv")
+```
+
+
+# Create final metadata: Combine participant and sample datsets and extract those with sequences
+To do: Verify if it is ok to save this combined file (survey and lab data) on OneDrive - we should NOT save any file that includes the metadata an sequences together
+
+```{r}
+#Combine sample and participant data
+data <- left_join(participants2, samples, by = c("ptid"), suffix = c(".p", ".s")) %>%
+  mutate(ptid = as.character(ptid),
+         region.F = factor(region, levels = c("Coast", "Nairobi")))
+
+#Add the genotypes from: https://comet.lih.lu/
+#Note: this gets automatically saves as a CSV but is actually tab-seperated
+COMET_subtype.hcv <- read.table("./HCV/HCV_subtype.csv", sep = "\t", header = TRUE) %>%
+  transmute(name = as.character(name),
+         #simplify unasigned gneotype to just show the 2 most likely - note: not sure why all exept 100% bootstrap support are unasigned
+         hcv_COMET_genotype.F = gsub("(-[^-]+)-.*", "\\1", subtype),
+         #also create a column using whatever genotype is most likely for the unassigned
+         hcv_COMET_genotype_best_guess.F = gsub("-.*", "", subtype),
+         hcv_COMET_genotype_best_guess.F = gsub(".* ", "", hcv_COMET_genotype_best_guess.F)) %>%
+  select(name, hcv_COMET_genotype.F, hcv_COMET_genotype_best_guess.F)
+
+#Note: this gets automatically saves as a CSV but is actually tab-seperated
+COMET_genotype.hiv <- read.table("./HIV/HIV_subtype.csv", sep = "\t", header = TRUE) %>%
+  transmute(name = as.character(name),
+         #remove everything except ptid from name column
+         name = gsub("\\|.*", "", name),
+         #simplify unassigned genotype to just show the 2 most likely - note: not sure why all exept 100% bootstrap support are unassigned
+         hiv_COMET_genotype.F = gsub("(-[^-]+)-.*", "\\1", subtype),
+         #also create a column using whatever genotype is most likely for the unassigned
+         hiv_COMET_genotype_best_guess.F = gsub("-.*", "", subtype),
+         hiv_COMET_genotype_best_guess.F = gsub(".* ", "", hiv_COMET_genotype_best_guess.F),
+         case_when(
+           hiv_COMET_genotype_best_guess.F == "02_AG" ~ "AG",
+           hiv_COMET_genotype_best_guess.F == "16_A2D" ~ "A2D"),
+         #make a factor
+         hiv_COMET_genotype_best_guess.F = factor(hiv_COMET_genotype_best_guess.F, levels = c("A1", "C", "D", "AG", "G", "A2D", "A2"))) %>%
+  select(name, hiv_COMET_genotype.F, hiv_COMET_genotype_best_guess.F)
+
+data.all <- left_join(data, COMET_subtype.hcv, by = c("ptid" = "name"))
+data.all <- left_join(data.all, COMET_genotype.hiv, by = c("ptid" = "name"))
+```
+Note: Bhavna is using adifferent program to get HIV genotypes, so may switch to that or just use hers for consistency 
+available HCV COMET genotypes: `r nrow(COMET_subtype.hcv)`  
+available HIV COMET genotypes: `r nrow(COMET_genotype.hiv)`
+
+
+## Extract just data for indivudals with HIV sequences
+```{r}
+#select only entries with HIV sequences
+data.hiv <- data.all %>%
+  filter(ptid %in% seq_ptid.hiv)
+
+#Are there any HIV sequences not in the merged dataset
+seq_ptid.hiv[!(seq_ptid.hiv[!grepl("\\.", seq_ptid.hiv)] %in% as.numeric(data$ptid))]
+```
+^To do: These are ptids in the sample data but not in the metadata - need to look into further
+
+
+## Get a list of variables of interest
+```{r}
+variables <- c("ptid", "krisp_id.p", "index_or_partner.F", "index_ptid", "index_ptids.F", "sex", "age", "enrollment_date", "region.F", "rcdmoneysex", "everinjecteddrugs", "lab_hiv_status.s", "hiv_status_final.F", "lab_hcv_status.s", "hcvresults_final", "partner_type_comb.F", "hcv_genotype.s", "hcv_COMET_genotype.F", "hcv_COMET_genotype_best_guess.F", "hiv_COMET_genotype.F", "hiv_COMET_genotype_best_guess.F", "hcv_vl.s", "lab_hcv_pcr_success.s")
+```
+Note:  
+.F = final (manipulated variable)  
+.p = from participant data  
+.s = from sample data  
+no appendix = variable unchanged and only present in one dataset (probably participant dataset)
+
+
+## Extract seperate HIV datasets based on genotype
+```{r}
+#Make separate A1, C, and D databases
+data.hiv_a1 <- data.hiv %>%
+  filter(hiv_COMET_genotype_best_guess.F == "A1")
+
+data.hiv_c <- data.hiv %>%
+  filter(hiv_COMET_genotype_best_guess.F == "C")
+
+data.hiv_d <- data.hiv %>%
+  filter(hiv_COMET_genotype_best_guess.F == "D")
+```
+
+
+
+
+# TREE VISUALIZATION AND CLUSTER DEFINITION
+
+# Read in tree from geneious prime
+
+```{r}
+#All sequences:
+tree.hiv <- read.tree("./HIV/Nucleotide alignment (modified) RAxML Tree.newick") %>%
+  #change tip lables (for SHARP sequences) to only include ptids
+  plyr::mutate(tip.label = gsub("\\|.*", "", tip.label))
+
+#convert to a tibble
+tree.hiv.t  <- as_tibble(tree.hiv) %>%
+  mutate(label = gsub("\\|.*", "", label))
+
+#Read in file of duplicate sequence names from lanl
+#duplicate_labels.hiv <-read.delim("./HIV/hiv-Kenya_ref_A1A2CDG (duplicates).tsv", sep = "\t") %>% pull("Name")
+```
+
+# Add metadata to tree
+```{r}
+tree.hiv.meta <- full_join(tree.hiv.t, data.hiv[,variables], by = c("label" = as.character("ptid"))) %>%
+  #extract metadata from lanl label names
+  tidyr::separate(label, c("hiv_subtype", "country", "year", "lanl_sequence_name", "ncbi_accession"), sep = "([.])", remove = FALSE) %>%
+  mutate(
+    #indicate source (from lanl ref or SHARP)
+    source = case_when(
+      grepl("\\.", label) ~ "lanl",
+      !is.na(label) ~ "SHARP",
+      TRUE ~ as.character(NA)),
+    #for the SHARP samples, this incorrectly adds the ptid as the lanl subtype, so change that to NA to avoid confusion
+    hiv_subtype = ifelse(source == "SHARP", NA, hiv_subtype),
+    #add genotypes for lanl references
+    hiv_genotype.F = ifelse(source == "SHARP", as.character(hiv_COMET_genotype_best_guess.F), as.character(hiv_subtype)),
+    #Temporarily, add label for duplicate sequences identified in geneious
+    #duplicates = ifelse(label %in% duplicate_labels.hiv, "duplicated", "not_duplicated")
+    )
+
+
+#2 labels don't have genotypes - need to look into this further
+```
+Total tree lables (SHARP and lanl sequences): `r `length(unique(tree.hiv.meta$label))`  
+number of missing genotypes: `r sum(is.na(tree.hiv.meta$hiv_genotype.F) & !is.na(tree.hiv.meta$label))`  
+^To do: need to look into these 16 missing genotypes
+
+# visualize basic trees
+
+## HIV genotype
+```{r}
+#Total tree
+geneotypeXsource.hiv.tree <- ggtree(tree.hiv) %<+% tree.hiv.meta +
+  geom_tippoint(shape = 21, aes(colour = source, fill = hiv_genotype.F)) + 
+  scale_colour_manual(values = c(000000, "black"))
+
+geneotypeXsource.hiv.tree
+ggsave(geneotypeXsource.hiv.tree, file = "./results/general/geneotypeXsource.hiv.png", width = 8, height = 10.5, units = "in")
+
+
+#Check that duplicates identified make sense
+#ggtree(tree.hiv) %<+% tree.hiv.meta +
+#  geom_tippoint(shape = 21, aes(colour = duplicates, fill = hiv_genotype.F)) + 
+#  scale_colour_manual(values = c(000000, "black"))
+```
+
+
+# cluster analysis - this is experimental
+
+### Load distance matrixes from Geneious
+note that there is an important difference between using a distance matrix extracted from a phylogeny vs a distance matrix based only on sequence comparison
+```{r}
+#Percent identity:
+#(alignment -> distances -> export matrix (% identity))
+tree.hiv.d_percent.df <- read.csv("./HIV/HIV_distance_percent_identity_from_tree.csv") %>%
+  plyr::mutate(X = gsub("\\|.*", "", X)) %>%
+  select(-1)
+tree.hiv.d_percent <- as.dist(as.matrix(tree.hiv.d_percent.df), diag = TRUE)
+#Also view the matrix
+tree.hiv.m_percent <- data.matrix(tree.hiv.d_percent)
+#identify clusters
+hc.hiv_percent <- hclust(tree.hiv.d_percent, method = "complete")
+
+#Patristic distance (branch-length based):
+#(alignment -> distances -> export matrix (% patristic distance))
+tree.hiv.d_percent.df <- read.csv("./HIV/HIV_distance_patristic_from_tree.csv") %>%
+  plyr::mutate(X = gsub("\\|.*", "", X)) %>%
+  select(-1)
+tree.hiv.d_patristic <- as.dist(as.matrix(tree.hiv.d_percent.df), diag = TRUE)
+#Also view the matrix
+tree.hiv.m_patristic <- data.matrix(tree.hiv.d_patristic)
+#identify clusters
+hc.hiv_patristic <- hclust(tree.hiv.d_percent, method = "complete")
+```
+To do: Is percent identity based on the tree or just the original sequences?
+
+### Alternatively, a distance matrix and clusters can be extracted directly from the tree 
+```{r}
+#Extract a distance matrix from the tree
+tree.hiv.m <- cophenetic(tree.hiv)
+tree.hiv.d <- as.dist(tree.hiv.m, diag = TRUE)
+hc.hiv <- hclust(tree.hiv.d, method = "complete")
+#Note: clustering based on the distance matrix is probable not ideal, instead should just use a patristic distance cut-off
+```
+To do: Verify that this matches the patristic distance matrix loaded from Geneious
+
+
+## Cluster analysis
+### k clustering
+K-based clustering may incresase power (by assigning all individuals to clusters) and makes sense if there is a pre-determined theory for the number of clusters 
+However, clusters cannot be infered to reflect transmission clusters and may be relatively meaninless if the range of patristic distances within the same clsuter is wide
+```{r}
+#HIV
+#assign each ptid to a cluster (use h to define clusters by min distance or use k to set desired number of clusters)
+K_clusters.hiv <- cutree(hc.hiv_patristic, k=2)
+#Get a list of ptids each cluster
+g.hiv_k <- split(names(K_clusters.hiv), K_clusters.hiv)
+
+#Add to data
+K_clusters.hiv <- data.frame(K_clusters.hiv)
+K_clusters.hiv$ptid <- rownames(K_clusters.hiv)
+data.hiv <- left_join(data.hiv, K_clusters.hiv, by = "ptid")
+```
+
+### Threshold-based clustering
+```{r}
+#HIV
+patristic_clusters.hiv <- cluster_by_patristic_distance(tree.hiv, min_size = 2, threshold = 0.015) #threshold = patristic distance threshold
+patristic_clusters.hiv.l <- as.character(patristic_clusters.hiv$cluster)
+names(patristic_clusters.hiv.l) <- patristic_clusters.hiv$sequence_name
+g.hiv_patristic <- split(names(patristic_clusters.hiv.l), patristic_clusters.hiv.l)
+
+#Avg size of clusters
+cluster_sizes <- patristic_clusters.hiv %>%
+  dplyr::group_by(cluster) %>%
+  summarise(n = n())
+
+#Add to data
+names(patristic_clusters.hiv)[names(patristic_clusters.hiv) == "cluster"] <- "patristic_clusters.hiv"
+data.hiv <- left_join(data.hiv, patristic_clusters.hiv, by = c("ptid" = "sequence_name"))
+```
+To do: search literature for a standard patristic distance threshold to use in identifiying transmission networks (I can only find % identity)  
+Total number of clusters: `r length(unique(patristic.hiv$cluster))`  
+Average cluster size: `r mean(cluster_sizes$n)`  
+Number of clusters that include at least one sample in SHARP data:  
+`r `length(unique(patristic_clusters.hiv[patristic_clusters.hiv$sequence_name %in% seq_ptid.hiv,]$cluster))`
+
+
+### Tree visualization - Clusters
+```{r}
+#Basic tree with genotype labels
+genotype.hiv.tree <- ggtree(tree.hiv) %<+%
+  tree.hiv.meta +
+  geom_tiplab(aes(label = hiv_genotype.F),
+              size = 2,
+              show.legend = FALSE)
+
+#HIV - k clusters
+genotypeXcluster_K.hiv.tree <- groupOTU(genotype.hiv.tree, g.hiv_k, "clade") +
+  aes(color=clade)  
+  #scale_colour_manual(values = my_colors[1:3])
+genotypeXcluster_K.hiv.tree
+#^NOT WORKING
+
+ggsave(genotypeXcluster_K.hiv.tree, file = "./results/regional trends/regionXgenotypeXcluster_tree.hiv.png", width = 8, height = 10.5, units = "in")
+
+#HIV - threshold clustering
+genotypeXcluster_P.hiv.tree <-
+  groupOTU(genotype.hiv.tree, g.hiv_patristic, "clade") +
+  aes(color = clade) +
+  scale_colour_manual(values = c("black", my_colors[1:15]))
+genotypeXcluster_P.hiv.tree
+
+ggsave(genotypeXcluster_P.hiv.tree, file = "./results/general/genotypeXcluster.hiv.png", width = 8, height = 10.5, units = "in")
+```
+the K=2 example is not working (I am not sure what the coloring is based on or why there are 2 clsuters instead of 3), I also need to verify that the threshold-based clusters are being colored correctly.  
+
+
+# Paper 1 - phylogentics and region
+## table 1
+```{r}
+#Table 1 - HIV
+table1_regional_trends.hiv <- table1(
+  ~ hiv_status_final +
+    hcvresults_final +
+    hcv_COMET_genotype.F +
+    hcv_COMET_genotype_best_guess.F +
+    hiv_COMET_genotype.F +
+    hiv_COMET_genotype_best_guess.F | region,
+  data = data.hiv,
+  render.continuous = rndr_cts,
+  render.categorical = rndr_cat,
+  render.missing = NULL,
+  overall = "Total"
+)
+
+print(table1_regional_trends.hiv)
+write.csv(table1_regional_trends.hiv, file = "./results/regional trends/regional_trends_HCV_table_1.hiv.csv")
+```
+
+## Association between region and HIV subtype
+```{r}
+#HIV
+#check reference category for region (Y)
+levels(data.hiv$region.F)
+
+table(genotype = data.hiv$hiv_COMET_genotype_best_guess.F, region = data.hiv$region.F, useNA = "ifany")
+#Becayse most people are A1, we will compair A1 to other - make a new column for this comparison
+data.hiv$A1_genotype <-
+  ifelse(
+    data.hiv$hiv_COMET_genotype_best_guess.F == "A1", "A1",
+    ifelse(data.hiv$hiv_COMET_genotype_best_guess.F == "A2" |
+        data.hiv$hiv_COMET_genotype_best_guess.F == "AG", NA,"other"
+        )
+    )
+
+hiv_genotypeXregion <- glm(region.F~A1_genotype, data = data.hiv, family = binomial(link = "logit"), na.action = "na.omit")
+
+#OR for 4a genotype in Nairobi (vs Coast)
+exp(coef(summary(hiv_genotypeXregion)))
+exp(confint(hiv_genotypeXregion))
+```
+
+
+## Tree visualization
+
+### Tree visualization - region
+```{r}
+tree.hiv.meta$region.F2 <- ifelse(is.na(tree.hiv.meta$region.F), "lanl ref", as.character(tree.hiv.meta$region.F))
+
+geneotypeXregion.hiv.tree <- ggtree(tree.hiv) %<+% tree.hiv.meta +
+  geom_tippoint(shape = 21, aes(colour = region.F2, fill = hiv_genotype.F)) + 
+  scale_colour_manual(values = c("blue", 000000, "black"))
+
+geneotypeXregion.hiv.tree
+ggsave(geneotypeXregion.hiv.tree, file = "./results/regional trends/geneotypeXregion.hiv.png", width = 8, height = 10.5, units = "in")
+```
+
+# Tree visualization - Region and cluster
+```{r}
+regionXgenotypeXcluster.hiv.tree <- genotypeXcluster_P.hiv.tree + 
+  geom_tippoint(aes(color = region.F)) +
+  scale_colour_manual(values = c("black", my_colors[1:15], "#00000000"))
+regionXgenotypeXcluster.hiv.tree
+
+ggsave(regionXgenotypeXcluster.hiv.tree, file = "./results/regional trends/regionXgenotypeXcluster_tree.hiv.png", width = 8, height = 10.5, units = "in")
+```
+To do: Fix legend, make lanl ref transparent
+
+
+BELOW THIS POINT IS NOT EDITED 1/4/22
+### Find assocaition between cluster and region
+```{r}
+#K-based
+regionXcluster_k2.hiv <- glm(region.F~K_clusters.hiv, data = data.hiv, family = binomial(link = "logit"), na.action = "na.omit")
+
+exp(coef(summary(regionXcluster_k2.hiv)))
+exp(confint(regionXcluster_k2.hiv))
+
+#Patristic
+regionXcluster_patristic.hiv <- glm(region.F~as.factor(clusters_patristic.hiv), data = data.hiv, family = binomial(link = "logit"), na.action = "na.omit")
+
+exp(coef(summary(regionXcluster_patristic.hiv)))
+exp(confint(regionXcluster_patristic.hiv))
+
+#rm(clusters.hiv)
+```
+
+### Group tree into 2 clusters - by genotype 1a
+```{r, eval = FALSE}
+#assign each ptid to a cluster (use h to define clusters by min distance, use k to set desired number of clusters)
+clusters <- cutree(hc.hcv.1a, k=2)
+#Get a list of ptids each cluster
+g <- split(names(clusters), clusters)
+p <- ggtree(hc.hcv, ladderize = TRUE)
+```
+
+### Tree visualization - by genotype 1a
+```{r, eval = FALSE}
+regionXgenotype.tree <- ggtree(tree.hcv.1a) %<+% tree.hcv.1a.meta +
+  geom_tippoint(aes(colour = region)) +
+  geom_tiplab(aes(label = hcv_COMET_genotype_best_guess.F), size = 2, show.legend=FALSE)
+regionXgenotypeXcluster.tree <- groupOTU(regionXgenotype.tree, g, "clade") +
+  aes(color=clade) +
+  scale_colour_discrete(name  ="Region", breaks=c("Coast", "Nairobi"))
+
+ggsave(regionXgenotypeXcluster.tree, file = "regionXgenotypeXcluster_tree.hcv.1a.png", width = 8, height = 10.5, units = "in")
+
+rm(clus, g, p)
+```
+
+
+
+### Group tree into 2 clusters - by genotype 4a
+```{r, eval = FALSE}
+#assign each ptid to a cluster (use h to define clusters by min distance, use k to set desired number of clusters)
+clusters <- cutree(hc.hcv.4a, k=2)
+#Get a list of ptids each cluster
+g <- split(names(clusters), clusters)
+p <- ggtree(hc.hcv.4a, ladderize = TRUE)
+```
+
+### Tree visualization - by genotype 4a
+```{r, eval = FALSE}
+regionXgenotype.tree <- ggtree(tree.hcv.4a) %<+% tree.hcv.4a.meta +
+  geom_tippoint(aes(colour = region)) +
+  geom_tiplab(aes(label = hcv_COMET_genotype_best_guess.F), size = 2, show.legend=FALSE)
+regionXgenotypeXcluster.tree <- groupOTU(regionXgenotype.tree, g, "clade") +
+  aes(color=clade) +
+  scale_colour_discrete(name  ="Region", breaks=c("Coast", "Nairobi"))
+
+ggsave(regionXgenotypeXcluster.tree, file = "regionXgenotypeXcluster_tree.hcv.4a.png", width = 8, height = 10.5, units = "in")
+
+rm(clus, g, p)
+```
+
+
+
+## Maddison-Slatkin test
+```{r}
+
+phylo.signal.disc <-
+function(trait,phy,rep = 10000) {
+
+trait <- data.hiv$region.F
+phy <- tree.hiv
+rep <- 10000
+  
+lev <- attributes(factor(trait))$levels
+cost1 <- 1-diag(length(lev))
+dimnames(cost1) <- list(lev,lev)
+
+obs <- data.hiv %>%
+  transmute(trait = as.numeric(region.F)) %>%
+  tibble::column_to_rownames(var = "ptid") %>%
+  data.matrix() %>%
+  t()
+
+obs2 <- phyDat(t(obs),type="USER", levels=attributes(factor(obs))$levels)
+OBS <- parsimony(phy, obs2, method="sankoff", cost=cost1)
+
+NULL.MODEL <- matrix(NA,rep,1)
+
+for (i in 1:rep){
+    #randomize region column
+    perm <- sample(1:nrow(data.hiv), replace=FALSE)
+    perm.data.hiv <- data.hiv
+    perm.data.hiv$region.F <- data.hiv$region.F[perm]
+    
+    #Get a null model from the randomized region column (there should just be a way to do the randomization in this step, but not sure how)
+    null <- perm.data.hiv %>%
+      transmute(trait = as.numeric(region.F)) %>%
+      tibble::column_to_rownames(var = "ptid") %>%
+      data.matrix() %>%
+      t()
+    
+    null2 <- phyDat(t(null), type="USER", levels=attributes(factor(null))$levels)
+    
+    NULL.MODEL[i,] <- parsimony(phy, null2, method="sankoff", cost=cost1)
+}
+    P.value <- sum(OBS >= NULL.MODEL)/(rep + 1)
+
+hist(NULL.MODEL, xlab="Transitions.in.Randomizations",
+     xlim=c(min(c(min(NULL.MODEL,OBS-1))), max(NULL.MODEL)+1), breaks = 30)
+arrows(OBS,rep/10,OBS,0,angle=20,col="red",lwd=4)
+
+OUTPUT1 <- t(data.frame(Number.of.Levels = length(attributes(factor(trait))$levels),
+                        Evolutionary.Transitions.Observed = OBS,
+                        Evolutionary.Transitions.Randomization.Median = median(NULL.MODEL),
+                        Evolutionary.Transitions.Randomization.Min = min(NULL.MODEL),
+                        Evolutionary.Transitions.Randomization.Max = max(NULL.MODEL),P.value))
+
+list(.Randomization.Results = OUTPUT1,
+     .Levels = lev,
+     .Costs.of.character.state.transition.UNORDERED.PARSIMONY = t(cost1))
+}
+```
+
+## Ancestral state reconstruction - NOT WORKING / IN-Progress
+```{r}
+region <- tree.hiv.meta$region.F2
+names(region) <- tree.hiv.meta$hiv_genotype.F
+region_levels <- c("Coast", "lanl ref", "Nairobi")
+
+tree.hiv$tip.label[!(tree.hiv$tip.label %in% region_ap)]
+
+region_pd <- as.phyDat(region, type ='USER' , levels = region_levels )
+region_ap <- ancestral.pars(tree.hiv, region_pd )
+plotAnc(tree.hiv, region_ap, cex = 0)
+
+
+alignment.hiv <- read.csv("./hiv/Nucleotide alignment 2 (modified).fasta")
+alignment_phydat.hiv <- phyDat(alignment.hiv)
+#pml.onj <- pml(tree.hiv, alignment.hiv)
+```
+
+
+# Paper 2 - APS and phylogenetics
+## Table 1
+```{r}
+#Table 1 - HCV
+table1.hiv <- table1(~ partner_type_comb.F +
+                   index_or_partner.F +
+                   hiv_status_final.F +
+                   hcvresults_final,
+         data = data.hiv, 
+         render.continuous = rndr_cts,
+         render.categorical = rndr_cat,
+         render.missing = NULL,
+         overall = "Total")
+
+print(table1.hiv)
+write.csv(table1.hiv, file = "./results/APS/APS_table_1.hiv.csv")
+
+#rm(table1.hiv)
+```
+
+## summary of pairs
+```{r}
+#Get an edgelist linking partners and indexes in dataset - note: must start with the whole dataset in order to consider pairs identified during any enrolement not just the first enrolemetn we're using
+index_partners_edge <- participants %>%
+  select(ptid, index_ptid) %>%
+  filter(ptid %in% seq_ptid.hiv & index_ptid %in% seq_ptid.hiv) %>%
+  as.matrix %>%
+  apply(2, as.numeric)
+
+#graph_from_edgelist(index_partners_edge)
+
+#Number of total participant-index pairs in total data:
+nrow(index_partners_edge)
+
+#HCV
+index_partners_edge.hcv <- participants %>%
+  select(ptid, index_ptid) %>%
+  filter(ptid %in% seq_ptid.hcv & index_ptid %in% seq_ptid.hcv) %>%
+  as.matrix %>%
+  apply(2, as.numeric)
+#Number of total participant-index pairs in HCV data:
+nrow(index_partners_edge.hcv)
+#Number of unique participants with a paired partner in hcv data:
+max(length(unique(index_partners_edge.hcv[,"ptid"])), length(unique(index_partners_edge.hcv[,"index_ptid"])))
+
+
+#HIV
+index_partners_edge.hiv <- participants %>%
+  select(ptid, index_ptid) %>%
+  filter(ptid %in% seq_ptid.hiv & index_ptid %in% seq_ptid.hiv) %>%
+  as.matrix %>%
+  apply(2, as.numeric)
+#Number of total participant-index pairs in HCV data:
+nrow(index_partners_edge.hiv)
+#Number of unique participants with a paired partner in hcv data:
+max(length(unique(index_partners_edge.hiv[,"ptid"])), length(unique(index_partners_edge.hiv[,"index_ptid"])))
+```
+
+## Associations
+```{r}
+#HCV
+#determine which is the reference category for HCV results (Y)
+levels(as.factor(data.all$hcvresults_final))
+
+hcvXpartner_type <- glm(as.factor(hcvresults_final)~partner_type_comb.F, data = data.all[data.all$hcvresults_final != "" & !is.na(data.all$partner_type_comb.F),], family = binomial(link = "logit"), na.action = "na.omit")
+
+#OR for partner type for positive (vs negative)
+exp(coef(summary(hcvXpartner_type)))
+exp(confint(hcvXpartner_type))
+
+
+#HIV
+#determine which is the reference category for HIV results (Y)
+levels(as.factor(data.all$hiv_status_final.F))
+
+addmargins(table(hiv = data.all$hiv_status_final.F, partner_type = data.all$partner_type_comb.F, useNA = "ifany"))
+
+hivXpartner_type <- glm(as.factor(hiv_status_final.F)~partner_type_comb.F, data = data.all[data.all$hiv_status_final.F != "" & !is.na(data.all$partner_type_comb.F),], family = binomial(link = "logit"), na.action = "na.omit")
+
+#OR for partner type for positive (vs negative)
+exp(coef(summary(hivXpartner_type)))
+exp(confint(hivXpartner_type))
+```
+
+## Test association between self-identified pairs and phylogenetic distance
+```{r}
+#HCV
+#get the phylogenetic distances between each identified index-partner pair
+pair_phy_dist.hcv <- c()
+for(i in 1:nrow(index_partners_edge.hcv)){
+  row <- index_partners_edge.hcv[i,]
+  pair_phy_dist.hcv[i] <- tree.hcv.m[as.character(row[1]), as.character(row[2])]
+  i <- i + 1
+}
+#add to edge list of self-identified pairs
+index_partners_edge.hcv <- cbind(index_partners_edge.hcv, data.frame(phy_dist = pair_phy_dist.hcv))
+
+#summarize distance between partner pairs:
+summary(index_partners_edge.hcv$phy_dist)
+
+#Compare to all possible pairs in phylogeny:
+#turn distance matrix into a vector, removing the self matches (0)s
+tree.hcv.v <- as.vector(tree.hcv.m[tree.hcv.m != 0])
+summary(tree.hcv.v)
+
+#perform a t-test of difference of the means:
+t.test(index_partners_edge.hcv$phy_dist, tree.hcv.v)
+
+
+#HIV
+#get the phylogenetic distances between each identified index-partner pair
+pair_phy_dist.hiv <- c()
+for(i in 1:nrow(index_partners_edge.hiv)){
+  row <- index_partners_edge.hiv[i,]
+  pair_phy_dist.hiv[i] <- tree.hiv.m[as.character(row[1]), as.character(row[2])]
+  i <- i + 1
+}
+#add to edge list of self-identified pairs
+index_partners_edge.hiv <- cbind(index_partners_edge.hiv, data.frame(phy_dist = pair_phy_dist.hiv))
+#summarize distance between partner pairs:
+summary(index_partners_edge.hiv$phy_dist)
+
+#Just pairs where the partner is identified as an injecting partner
+index_partners_edge.hiv$ptid <- as.character(index_partners_edge.hiv$ptid)
+index_partners_edge.hiv <- left_join(index_partners_edge.hiv, data.hiv[,c("ptid", "partner_type_comb.F")], by = "ptid")
+
+index_partners_edge.IDU.hiv <- index_partners_edge.hiv %>%
+  filter(partner_type_comb.F == "Injecting" | partner_type_comb.F == "Sexual&Injecting")
+summary(index_partners_edge.IDU.hiv$phy_dist)
+
+#Just pairs where the partner is identified as sexual
+index_partners_edge.sexual.hiv <- index_partners_edge.hiv %>%
+  filter(partner_type_comb.F == "Sexual" | partner_type_comb.F == "Sexual&Injecting")
+summary(index_partners_edge.sexual.hiv$phy_dist)
+  
+#Compare to all possible pairs in phylogeny:
+#turn distance matrix into a vector, removing the self matches (0)s
+tree.hiv.v <- as.vector(tree.hiv.m[tree.hiv.m != 0])
+summary(tree.hiv.v)
+
+#perform a t-test of difference of the means:
+t.test(index_partners_edge.hiv$phy_dist, tree.hiv.v)
+```
+
+## Visualize phylogenetic distance between pairs
+```{r}
+ggplot() + 
+  geom_histogram(aes(tree.hiv.v), color = "blue", fill="white", alpha=0.5, position="identity")+ 
+  geom_histogram(aes(index_partners_edge.hiv$phy_dist), color = "red", fill="white", alpha=0.5, position="identity")
+
+png("./results/APS/partner_dist_hist.png")
+par(mfrow=c(2,2))
+hist(tree.hiv.v, col=rgb(0,0,1,1/4), xlim = c(0,0.7), main = "All")
+abline(v=mean(tree.hiv.v), col = "red")
+hist(index_partners_edge.hiv$phy_dist, col=rgb(1,0,0,1/4), xlim = c(0,0.7), main = "partners") 
+abline(v=mean(index_partners_edge.hiv$phy_dist), col = "red")
+hist(index_partners_edge.IDU.hiv$phy_dist, col=rgb(0.2,0.7,0,1/4), xlim = c(0,0.7), main= "Injecting partners") 
+abline(v=mean(index_partners_edge.IDU.hiv$phy_dist), col = "red")
+hist(index_partners_edge.sexual.hiv$phy_dist, col=rgb(0.2,0.2,0.4,1/4), xlim = c(0,0.7), main= "Sexual partners") 
+abline(v=mean(index_partners_edge.sexual.hiv$phy_dist), col = "red")
+dev.off()
+```
+
+## Tree visualization
+```{r}
+#HCV
+partner_pairsXparter_typeXenrollment_type.hcv.tree <- ggtree(tree.hcv) %<+% tree.hcv.meta +
+  #geom_tiplab() + 
+  geom_tippoint(aes(shape = index_or_partner.F, colour = partner_type_comb.F)) + 
+  labs(colour = "partner type", shape = "enrollment") +
+  geom_taxalink(taxa1 = as.character(index_partners_edge.hcv[, "ptid", drop = TRUE]), taxa2 = as.character(index_partners_edge.hcv[, "index_ptid", drop = TRUE]))
+
+ggsave(partner_pairsXparter_typeXenrollment_type.hcv.tree, file = "./results/APS/regionXgenotypeXcluster_tree.hcv.png", width = 8, height = 10.5, units = "in")
+
+#HIV
+partner_pairsXparter_typeXenrollment_type.hiv.tree <- ggtree(tree.hiv) %<+% tree.hiv.meta +
+  #geom_tiplab() + 
+  geom_tippoint(aes(shape = index_or_partner.F, colour = partner_type_comb.F)) + 
+  labs(colour = "partner type", shape = "enrollment") +
+  geom_taxalink(taxa1 = as.character(index_partners_edge.hiv[, "ptid", drop = TRUE]), taxa2 = as.character(index_partners_edge.hiv[, "index_ptid", drop = TRUE]), alpha = 0.25)
+
+ggsave(partner_pairsXparter_typeXenrollment_type.hiv.tree, file = "./results/APS/regionXgenotypeXcluster_tree.hiv.png", width = 8, height = 10.5, units = "in")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+# trends and inconsistancies in the data with HCV sequnces available
+## Enrolment, partner type, and region
+```{r, echo = FALSE, eval = FALSE}
+#Index or partner:
+table(Index_or_partner = data.hcv$index_or_partner.F)
+
+#partner type:
+table(partner_type = data.hcv$partner_type_comb.F, useNA = "ifany")
+
+#region
+table(region = data.hcv$region, useNA = "ifany")
+```
+
+## HIV status
+```{r, echo = FALSE, eval = FALSE}
+#HIV status:
+table(HIV_status = as_factor(data.hcv$hiv_status_final), useNA = "ifany")
+#HIV status using lab data - note: in the lab data the unasigned sample is assigned negative:
+table(HIV_status = as_factor(data.hcv$lab_hiv_status.s), useNA = "ifany")
+#Confirm the same samples are negative in lab (sample) and aprticipant data:
+HIV_status_final_neg <- data.hcv[data.hcv$hiv_status_final == "Negative" | data.hcv$hiv_status_final == "", "ptid", drop = TRUE]
+lab_HIV_neg <- data.hcv[data.hcv$lab_hiv_status.s == "Negative", "ptid", drop = TRUE]
+setdiff(HIV_status_final_neg, lab_HIV_neg)
+setdiff(lab_HIV_neg, HIV_status_final_neg)
+#There are two discrepancies:
+write.table(data.hcv[data.hcv$ptid == "394322349225" | data.hcv$ptid == "663925913226", c("ptid", "hiv_status_final", "lab_hiv_status.s")], file = "ptids_with_confliciting_lab_and_final_hiv_status.txt")
+#One individual has a negative lab result but a positive final status - this might be ok - was other information used to assign the final status?
+#The other has a psotiive lab status but negative final result - not sure why this would be
+```
+
+## HCV status
+```{r, echo = FALSE, eval = FALSE}
+#HCV status:
+table(HCV_status = as_factor(data.hcv$hcvresults_final), useNA = "ifany")
+#why do we have sequences from samples with negative final HCV status?
+#HCV status using lab data - again, in th lab data, the unasigned sample is assigned negative:
+table(HCV_status = as_factor(data.hcv$lab_hcv_status.s), useNA = "ifany")
+#Confirm these are the same samples
+"HCV final stauts negatives"
+data.hcv[data.hcv$hcvresults_final == "Negative" | data.hcv$hcvresults_final == "", "ptid"]
+"lab data HCV negatives"
+data.hcv[data.hcv$lab_hcv_status.s == "Negative", "ptid"]
+#The three samples that are negative (or unassigned) in the lab data vs the HCV_status_final variable are different!
+#save ptids for these samples
+hcv_neg_seq <- data.hcv[data.hcv$lab_hcv_status.s == "Negative" | as_factor(data.hcv$hcvresults_final) == "Negative" | is.na(data.hcv$hcvresults_final), "ptid", drop = TRUE]
+hcv_neg_seq.df <- participants %>%
+  #using participant data because I want to look across al dates, not just the first enrollment that the data is filtered to
+  filter(participants$ptid %in% hcv_neg_seq) %>%
+  arrange(ptid, enrollment_date) %>%
+  select(ptid, lab_hcv_status, hcvresults_final, enrollment_date, lab_hcv_pcr_success) 
+hcv_neg_seq.df
+
+write.table(hcv_neg_seq.df, file = "ptids_with_reported_hcv_neg_either_lab_or_final_stutus_all_enrollments_shown.txt")
+#Note: there are 6 sequences that are neg or NA for either lab status or HCV result final (but they are pos for the other)
+
+
+#How many samples are listed as HCV positive but don't have sequences
+HCV_pos_no_seq <- samples.all[samples.all$lab_hcv_status == "Positive" & !samples.all$ï..ptid %in% seq_ptid.hcv , c("ï..ptid", "hcv_vl", "lab_hcv_status", "hcv_pcr_success")]
+#Number of sampels HCV positive but no sequnce - note: this does not indicate an error... need to look at PCR success
+nrow(HCV_pos_no_seq)
+
+#How many samples are listed as HCV_positive and PCR successful but don't have sequences?
+pcr_success_no_seq <- samples.all[samples.all$lab_hcv_status == "Positive" & !samples.all$ï..ptid %in% seq_ptid.hcv & samples.all$lab_hcv_pcr_success == "Yes", c("ï..ptid", "hcv_vl", "lab_hcv_status", "hcv_pcr_success")]
+pcr_success_no_seq
+write.table(pcr_success_no_seq, file = "pcr_successful_but_no_hcv_seq.txt")
+```
+
+## HIV viral loads & PCR success
+```{r, echo = FALSE, eval = FALSE}
+#HIV viral load:
+data.hcv %>%
+  mutate(
+    hiv_vl.s = case_when(
+      #Note: this assumes that all numberic viral loacs are > than the threshold 839, which should be the case, but I will add annother step to verify
+    !is.na(as.numeric(hiv_vl.s)) ~ ">=839",
+    TRUE ~ hiv_vl.s
+  )) %>%
+  {table(HIV_viral_load = .$hiv_vl.s, useNA = "ifany")}
+
+#HIV PCR success:
+table(HIV_PCR_success = data.hcv$lab_hiv_pcr_success.s, useNA = "ifany")
+```
+
+## HCV viral loads and PCR success 
+```{r, echo = FALSE, eval = FALSE}
+#HCV viral load:
+#Double check the mutate code here
+data.hcv %>%
+  mutate(
+    hcv_vl.s = case_when(
+    !is.na(as.numeric(hcv_vl.s)) ~ ">=338",
+    TRUE ~ hcv_vl.s
+  )) %>%
+  {table(HCV_viral_load = .$hcv_vl.s, useNA = "ifany")}
+
+write.table(data.hcv[data.hcv$hcv_vl.s == "Not detected", "ptid"], file = "hcv_vl_not_detected.txt")
+
+#See how many samples have high viral loads but no HCV sequences
+samples.all %>%
+  #Look only at samples we don't have sequences for
+  filter(!ï..ptid %in% seq_ptid.hcv) %>%
+  mutate(
+    hcv_vl = case_when(
+    !is.na(as.numeric(hcv_vl)) ~ ">=338",
+    TRUE ~ hcv_vl
+  )) %>%
+  {table(HCV_viral_load = .$hcv_vl, useNA = "ifany")}
+
+detectable_vl_no_seq <- samples.all[!samples.all$ï..ptid %in% seq_ptid.hcv &  !is.na(as.numeric(samples.all$hcv_vl)), c("ï..ptid", "hcv_vl", "lab_hcv_status")]
+detectable_vl_no_seq
+write.table(detectable_vl_no_seq, file = "detectable_HCV_vl_no_seq.txt")
+
+
+#HCV PCR success:
+table(HCV_PCR_success = data.hcv$lab_hcv_pcr_success.s, useNA = "ifany")
+
+```
+
+## HCV genotype
+```{r, echo = FALSE, eval = FALSE}
+#hcv_genotype (using COMET_genotype_best_guess):
+table(data.hcv$COMET_genotype_best_guess, useNA = "ifany")
+#hcv_genotype by region
+table(genotype = data.hcv$hcv_COMET_genotype_best_guess.F, region = data.hcv$region, useNA = "ifany")
+
+#genotype from participant vs sample (lab) data
+table(genotype_from_participant_data = data.hcv$hcv_genotype.p, genotype_from_samples_data = data.hcv$hcv_genotype.s, useNA = "ifany")
+#There is one ptid assigned a gentoype in the same data but not the participant data
+
+#hcv_genotype - SHARP vs COMET assignment:
+table(COMET_genotype = data.hcv$hcv_COMET_genotype.F, SHARP_genotype = data.hcv$hcv_genotype.s)
+
+#hcv_genotype - SHARP vs COMET assignment (using best guess for COMET unasigned):
+table(COMET_genotype = data.hcv$hcv_COMET_genotype_best_guess.F, SHARP_genotype = data.hcv$hcv_genotype.s)
+```
+
+## HCV sequencing method
+```{r, echo = FALSE, eval = FALSE}
+table(data.hcv$Sequencing_Method.s, data.hcv$shipment.s, useNA = "ifany")
+#Number of sequences without a sequencing method:
+sum(data.hcv$Sequencing_Method.s == "")
+
+write.table(data.hcv[data.hcv$Sequencing_Method.s == "", c("ptid", "Sequencing_Method.s", "shipment.s")], file = "no_HCV_seq_method.txt")
+```
+
+
+# trends and inconsistancies in the data with HIV sequnces available
+## Enrolment, partner type, and region
+```{r, echo = FALSE, eval = FALSE}
+#Index or partner:
+table(Index_or_partner = data.hiv$index_or_partner.F)
+
+#partner type:
+table(partner_type = data.hiv$partner_type_comb.F, useNA = "ifany")
+
+#region
+table(region = data.hiv$region, useNA = "ifany")
+```
+
+## HIV status
+```{r, echo = FASLE, eval = FALSE}
+#HIV status:
+table(HIV_status = as_factor(data.hiv$hiv_status_final), useNA = "ifany")
+#HIV status using lab data - note: in the lab data the unasigned sample is assigned negative:
+table(HIV_status = as_factor(data.hiv$lab_hiv_status.s), useNA = "ifany")
+#Confirm these are the same samples:
+HIV_status_final_neg <- data.hiv[data.hiv$hiv_status_final == "Negative" | data.hiv$hiv_status_final == "", "ptid", drop = TRUE]
+lab_HIV_neg <- data.hiv[data.hiv$lab_hiv_status.s == "Negative", "ptid", drop = TRUE]
+setdiff(HIV_status_final_neg, lab_HIV_neg)
+setdiff(lab_HIV_neg, HIV_status_final_neg)
+#No discrepancies
+```
+NEED TO CONVERT NEXT SECTION TO HIV
+## HCV status
+```{r, echo = FASLE, eval = FALSE}
+#HCV status:
+table(HCV_status = as_factor(data.hiv$hcvresults_final), useNA = "ifany")
+#why do we have sequences from samples with negative final HCV status?
+#HCV status using lab data - again, in th lab data, the unasigned sample is assigned negative:
+table(HCV_status = as_factor(data.hiv$lab_hcv_status.s), useNA = "ifany")
+#Confirm these are the same samples
+"HCV final stauts negatives"
+data.hiv[data.hiv$hcvresults_final == "Negative" | data.hiv$hcvresults_final == "", "ptid"]
+"lab data HCV negatives"
+data.hcv[data.hcv$lab_hcv_status.s == "Negative", "ptid"]
+#The three samples that are negative (or unassigned) in the lab data vs the HCV_status_final variable are different!
+#save ptids for these samples
+hcv_neg_seq <- data.hcv[data.hcv$lab_hcv_status.s == "Negative" | as_factor(data.hcv$hcvresults_final) == "Negative" | is.na(data.hcv$hcvresults_final), "ptid", drop = TRUE]
+hcv_neg_seq.df <- participants %>%
+  #using participant data because I want to look across al dates, not just the first enrollment that the data is filtered to
+  filter(participants$ptid %in% hcv_neg_seq) %>%
+  arrange(ptid, enrollment_date) %>%
+  select(ptid, lab_hcv_status, hcvresults_final, enrollment_date, lab_hcv_pcr_success) 
+hcv_neg_seq.df
+
+write.table(hcv_neg_seq.df, file = "ptids_with_reported_hcv_neg_either_lab_or_final_stutus_all_enrollments_shown.txt")
+#Note: there are 6 sequences that are neg or NA for either lab status or HCV result final (but they are pos for the other)
+
+
+#How many samples are listed as HCV positive but don't have sequences
+HCV_pos_no_seq <- samples.all[samples.all$lab_hcv_status == "Positive" & !samples.all$ï..ptid %in% seq_ptid.hcv , c("ï..ptid", "hcv_vl", "lab_hcv_status", "hcv_pcr_success")]
+#Number of sampels HCV positive but no sequnce - note: this does not indicate an error... need to look at PCR success
+nrow(HCV_pos_no_seq)
+
+#How many samples are listed as HCV_positive and PCR successful but don't have sequences?
+pcr_success_no_seq <- samples.all[samples.all$lab_hcv_status == "Positive" & !samples.all$ï..ptid %in% seq_ptid.hcv & samples.all$lab_hcv_pcr_success == "Yes", c("ï..ptid", "hcv_vl", "lab_hcv_status", "hcv_pcr_success")]
+pcr_success_no_seq
+write.table(pcr_success_no_seq, file = "pcr_successful_but_no_hcv_seq.txt")
+```
+
+## HIV viral loads & PCR success
+```{r, echo = FASLE, eval = FALSE}
+#HIV viral load:
+data.hcv %>%
+  mutate(
+    hiv_vl.s = case_when(
+      #Note: this assumes that all numberic viral loacs are > than the threshold 839, which should be the case, but I will add annother step to verify
+    !is.na(as.numeric(hiv_vl.s)) ~ ">=839",
+    TRUE ~ hiv_vl.s
+  )) %>%
+  {table(HIV_viral_load = .$hiv_vl.s, useNA = "ifany")}
+
+#HIV PCR success:
+table(HIV_PCR_success = data.hcv$lab_hiv_pcr_success.s, useNA = "ifany")
+```
+
+## HCV viral loads and PCR success 
+```{r, echo = FASLE, eval = FALSE}
+#HCV viral load:
+#Double check the mutate code here
+data.hcv %>%
+  mutate(
+    hcv_vl.s = case_when(
+    !is.na(as.numeric(hcv_vl.s)) ~ ">=338",
+    TRUE ~ hcv_vl.s
+  )) %>%
+  {table(HCV_viral_load = .$hcv_vl.s, useNA = "ifany")}
+
+write.table(data.hcv[data.hcv$hcv_vl.s == "Not detected", "ptid"], file = "hcv_vl_not_detected.txt")
+
+#See how many samples have high viral loads but no HCV sequences
+samples.all %>%
+  #Look only at samples we don't have sequences for
+  filter(!ï..ptid %in% seq_ptid.hcv) %>%
+  mutate(
+    hcv_vl = case_when(
+    !is.na(as.numeric(hcv_vl)) ~ ">=338",
+    TRUE ~ hcv_vl
+  )) %>%
+  {table(HCV_viral_load = .$hcv_vl, useNA = "ifany")}
+
+detectable_vl_no_seq <- samples.all[!samples.all$ï..ptid %in% seq_ptid.hcv &  !is.na(as.numeric(samples.all$hcv_vl)), c("ï..ptid", "hcv_vl", "lab_hcv_status")]
+detectable_vl_no_seq
+write.table(detectable_vl_no_seq, file = "detectable_HCV_vl_no_seq.txt")
+
+
+#HCV PCR success:
+table(HCV_PCR_success = data.hcv$lab_hcv_pcr_success.s, useNA = "ifany")
+
+```
+
+## HIV genotype
+```{r, echo = FASLE, eval = FALSE}
+#hiv_genotype (using COMET_genotype_best_guess):
+table(data.hiv$hiv_COMET_genotype.F, useNA = "ifany")
+#hiv_genotype by region
+table(genotype = data.hiv$hiv_COMET_genotype_best_guess.F, region = data.hiv$region, useNA = "ifany")
+
+#genotype from participant vs sample (lab) data
+table(genotype_from_participant_data = data.hiv$hiv_subtype.F.p, genotype_from_samples_data = data.hiv$hiv_subtype.F.s, useNA = "ifany")
+
+#genotype vs subtype from sampledata
+table(subtype = data.hiv$hiv_subtype.F.s, genotype = data.hiv$HIV_Genotype1.s, useNA = "ifany")
+#These match
+
+#hiv_genotype - SHARP vs COMET assignment:
+table(COMET_genotype = data.hiv$hiv_COMET_genotype.F, SHARP_genotype = data.hiv$hiv_subtype.F.p)
+
+#hiv_genotype - SHARP vs COMET assignment (using best guess for COMET unasigned):
+table(COMET_genotype = data.hcv$hcv_COMET_genotype_best_guess.F, SHARP_genotype = data.hcv$hcv_genotype.s)
+```
+
+## HCV sequencing method
+```{r, echo = FASLE, eval = FALSE}
+table(data.hcv$Sequencing_Method.s, data.hcv$shipment.s, useNA = "ifany")
+#Number of sequences without a sequencing method:
+sum(data.hcv$Sequencing_Method.s == "")
+
+write.table(data.hcv[data.hcv$Sequencing_Method.s == "", c("ptid", "Sequencing_Method.s", "shipment.s")], file = "no_HCV_seq_method.txt")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# BACKUP #
+
+
+sequnce data as dataframe using for loop
+```{r, eval = FALSE, echo = FALSE}
+#Save sequence data as a dataframe
+ptid_list <- c()
+seq_string <- ""
+seq_list <- c()
+for (row in 1:nrow(seq)) {
+  #extract row
+  my_row <- seq[my_row, 1]
+  #If the line does not start with ">" (ie. is a sequence line)
+  if (!grepl(">", my_row)) {
+    #add it to the growing sequence string
+    seq_string <- paste0(seq_string, my_row)
+  } else {
+    #otherwise, add the sequence to the seq_list vector
+    seq_list <- append(seq_list, seq_string)
+    #re-initialize an empty string to combine sequence lines into
+    seq_string <- ""
+    #add the ptid line (minus the ">") to the ptid_list vector
+    ptid_list <- append(ptid_list, gsub(">", "", my_row))
+  }
+}
+
+#Combine into a dataframe (the first value of seq_list is empty, so remove that)
+seq.df <- cbind(ptid = as.numeric(ptid_list), seq = seq_list[-1])  
+  
+```
+
+Reformat dates in sampels files
+This wasn't necissary becaues there is only 1 entry per ptid!
+```{r, eval = FALSE, echo = FALSE}
+samples2 <- samples %>%
+      dplyr::mutate(
+    #Reformat to match sequence ID names - no longer need to do because using ptids not KRISP_IDs
+        krisp_id = gsub("_", "-", krisp_id.x),
+        krisp_id = gsub("KRISP", "KP", krisp_id)) %>%
+  group_by(ptid) %>%
+  mutate(DateofSamplecollection =
+           #if not formatted like this: 05/20/2018,
+           case_when(
+             !grepl("[0-9]{2}/[0-9]{2}/[0-9]{4}", DateofSamplecollection) ~
+               #then the format is like this: 20may2018, and should be changed to this 05/20/2018
+               format(as.Date(DateofSamplecollection, format = "%d%b%Y"), "%m/%d/%Y"),
+             TRUE ~ DateofSamplecollection
+           )) %>%
+  arrange(desc(DateofSamplecollection)) %>% #All test dates for the same sample seem to be the same, should use another date variable as well
+  dplyr::slice(1L)
+nrow(samples)
+```
+
+Partners data date exploration
+```{r, eval = FALSE, echo = FALSE}
+#Is test date unique for each separate entry for each ptid?
+temp = partners %>%
+  filter(ptid %in% seq_ptid.hcv) %>% #only need to look at ptids we have sequences for
+  group_by(ptid, test_date) %>%
+  distinct(.keep_all = TRUE) %>%
+  group_by(ptid) %>%
+  filter(n() == 1) %>%
+  select(ptid, test_date)
+partners$duplicated_date = !(partners$ptid %in% temp$ptid)
+head(partners[,c("ptid", "test_date", "duplicated_date")])
+#No the test date is shared, so this can't be used to find the most recent entry
+#pe_date does differentiate between individuals
+```
+
+Participant data
+```{r, eval = FALSE, echo = FALSE}
+#Make a column that combines the partner_types, that way these aren't lost when selecting only 1 entry per ptid
+agg2 <- aggregate(as_factor(partner_type)~ptid, data = participants_agg, paste0, collapse=";")
+participants_agg2 <- merge(participants_agg, agg2, by = "ptid", all = T)
+colnames(participants_agg2) <- c(colnames(participants_agg), "partner_types.F") # optional
+head(participants_agg2[,c("ptid", "partner_type", "partner_types.F")])
+```
+
+Exploring missing or illogical HCV data
+```{r, eval = FALSE, echo = FALSE}
+#check in lab data
+samples2<- samples[samples$ptid %in% data2$ptid.x,]
+table(hvc_lab = samples2$lab_hcv_status, useNA = "ifany")
+#same result as the hcv positivity in participant data
+#Is there a difference in lab that could explain?
+table(hvc_lab = samples2$lab_hcv_status, method = samples2$Sequencing_Method, useNA = "ifany")
+table(hvc_lab = samples2$lab_hcv_status, PCR = samples2$lab_hcv_pcr_success, useNA = "ifany")
+#Each of these sampels was PCR not successful
+table(hvc_lab = samples2$lab_hcv_status, batch = samples2$shipment, useNA = "ifany")
+#All of the negative results (and 5 positive results) were in batch 1, while he rest of the positive results (and no negative results) were in batch 3
+
+#Why don't we have samples from other batches / how many pos HCV results should there be in total?
+samples %>%
+  filter(lab_hiv_status == "Positive") %>%
+  {table(PCR = .$lab_hcv_pcr_success, batch = .$shipment)}
+```
+
+# Investigating inconsistancies between old and new files
+```{r, eval = FALSE, echo = FALSE}
+#which sequences matched samples labeled HCV negative in the originla (64 sample 8/4) data?
+neg_hcv_8_4 <- read.table("C:/Users/hking/OneDrive/my documents/UW/SHARP & Farquahar Lab/phylogenetic/hcv_neg_seq_8_4.txt", col.names = "krisp_id")
+#add ptid column
+neg_hcv_8_4 <- left_join(neg_hcv_8_4, as.data.frame(data[,c("ptid", "krisp_id")]))
+write.table(neg_hcv_8_4, file = "C:/Users/hking/OneDrive/my documents/UW/SHARP & Farquahar Lab/phylogenetic/neg_hcv_ptid_krispid_8_4.txt", row.names = FALSE, quote = FALSE)
+
+
+#What happened to these sequences in new sequences dataset?
+sum(seq_ptid.hcv %in% neg_hcv_8_4$ptid)
+sum(data$ptid %in% neg_hcv_8_4$ptid)
+
+
+#Read in old FASTA file to check if the 65 samples that match between the new FASTA file and the samples file are all the ones from the old file
+seq_old <- read.table("C:/Users/hking/OneDrive/my documents/UW/SHARP & Farquahar Lab/phylogenetic/old/All.HCV_n63_2020.10.06.fa")
+#extract ptids as a vector
+seq_krisp_old <- seq_old %>%
+  #extract only sequence identifiers
+  filter(grepl(">", V1)) %>%
+  #Remove '>' because this will not show up in imported tree file
+  dplyr::mutate(
+    V1 = gsub(">", "", V1)) %>%
+  #extract as a vector
+  pull(V1)
+
+length(seq_krisp_old)
+nrow(filter(data, krisp_id %in% seq_krisp_old))
+```
+
+# Code from Diana
+```{r, eval = FALSE, echo = FALSE}
+#check that all tiplabels are in tree
+table(tip.label(tree) %in% df$tip.label)
+```
+
+
+```{r, eval = FALSE, echo = FALSE}
+#Are there any sequences not in the merged dataset
+seq_ptid.hcv[!(seq_ptid.hcv %in% as.numeric(data$ptid))]
+write.table(seq_ptid.hcv[!(seq_ptid.hcv %in% as.numeric(data$ptid))], file = "ptid_with_sampledata_but_not_metadata.txt")
+
+#Yes. Determine if this sequence is in the samples, participants, or indexes dataframes?
+893522170222 %in% samples$ptid
+893522170222 %in% partners$ptid
+893522170222 %in% indexes$ptid
+#This individual has sample but not participant data. Will drop
+```
+
+
+
+```{r, eval = FALSE, echo = FALSE}
+cluster_by_dist_matrix <- function(tree, min_size = 2, threshold = 0.02) {
+    adj_mat       <- dist <= threshold
+    cluster_graph <- igraph::graph_from_adjacency_matrix(adj_mat, mode="undirected", diag=FALSE)
+    components    <- igraph::components(cluster_graph)
+    retain_assignments <- purrr::keep(components$membership, ~ components$csize[.x] >= min_size)
+    clusters           <- tibble::tibble(sequence_name = names(retain_assignments), cluster = retain_assignments)
+  return(clusters)
+}
+
+hcv.clust <- cluster_by_dist_matrix(tree.dist, min_size = 2, threshold = 0.02)
+```
+
+#Alternative ways to plot clusters
+```{r, eval = FALSE, echo = FALSE}
+#1
+p <- groupClade(p, clades, group_name='subtree') + aes(color=subtree)
+
+p %<+% tree.meta + 
+  layout_dendrogram() + 
+  geom_tippoint(size=2, shape=21, aes(fill=factor(partner_type)))
+
+#2
+#add cluster groupings to metadata
+clus.df <- as.data.frame(clus)
+clus.df$label <- rownames(clus.df)
+tree.meta2 <- full_join(tree.meta, clus.df, by ="label")
+
+as.vector(clades)
+tree2 <- groupClade(tree, c(348, 208))
+
+ggtree(tree) %<+% tree.meta2 +
+  aes(color = clus)
+
+
+ggtree(tree2, aes(color=group)) %<+% tree.meta2 +
+  geom_tippoint(aes(shape = as.factor(hiv_status_final.F), color = as.factor(clus)))
+```
+
+
+# cluster by patristic distance method
+
+# The above is not working (there is a problem with the nubmer of clusters, which may be a bug in the script)
+```{r, eval = FALSE, echo = FALSE}
+#define function (uses igraph and network graphing)
+cluster_by_patristic_distance <- function(tree, min_size = 2, threshold = 0.05) {
+    patristic.dist <- ape::cophenetic.phylo(tree)
+    adj_mat        <- patristic.dist <= threshold
+    cluster_graph  <- igraph::graph_from_adjacency_matrix(adj_mat, mode="undirected", diag=FALSE)
+    components     <- igraph::components(cluster_graph)
+    retain_assignments <- purrr::keep(components$membership, ~ components$csize[.x] >= min_size)
+    clusters           <- tibble(sequence_name = names(retain_assignments), cluster = retain_assignments)
+  return(clusters)
+}
+
+patristic.05.hcv <- cluster_by_patristic_distance(tree, min_size = 1, threshold = 0.05)
+#add cluster groupings to metadata
+tree.meta2 <- full_join(tree.meta, patristic.05.hcv, by = c("label" = "sequence_name"))
+
+patristic <- setNames(as.numeric(patristic.05.hcv$cluster), patristic.05.hcv$sequence_name)
+g <- split(names(patristic), patristic)
+p <- ggtree(tree.meta2, ladderize = TRUE) + geom_tiplab() +
+  geom_tippoint(aes(color = as.factor(cluster)))
+
+p
+
+#For each cluster group (ie. lsit of ptids in that cluster), extract the node for the most recent common ancestor
+clades <- sapply(g, function(n) MRCA(p, n))
+
+for(i in 1:length(g)){
+  MRCA(p, as.numeric(unlist(g[1])))
+}
+
+tree2 <- groupClade(tree, as.vector(clades))
+ggtree(tree2, aes(color=group)) %<+% tree.meta2 +
+  geom_tippoint(aes(color = as.factor(cluster)))
+
+
+tree2 <- groupClade(tree, as.vector(patristic.05.hcv$cluster))
+ggtree(tree2, aes(color=group)) %<+% tree.meta2 +
+  geom_tippoint(aes(shape = as.factor(hiv_status_final.F), color = as.factor(cluster)))
+
+
+tree2 <- groupClade(tree, unique(tree.meta3$cluster[!is.na(tree.meta3$cluster)]))
+ggtree(tree, aes(color=group)) %<+% tree.meta3 +
+  geom_tippoint(aes(shape = as.factor(hiv_status_final), color = as.factor(IndexorPartner.x)))
+                
+ggtree(tree) %<+% tree.meta3 +
+  geom_tippoint(aes(colour = as_factor(cluster)))
+```
+
+
+# cluster analysis method 2
+```{r, eval = FALSE, echo = FALSE}
+cluster_by_TN93 <- function(tree, min_size = 2, threshold = 0.02) {
+    TN93.dist     <- ape::dist.dna(dna, model="TN93", pairwise.deletion = TRUE, as.matrix=TRUE)
+    adj_mat       <- TN93.dist <= threshold
+    cluster_graph <- igraph::graph_from_adjacency_matrix(adj_mat, mode="undirected", diag=FALSE)
+    components    <- igraph::components(cluster_graph)
+    retain_assignments <- purrr::keep(components$membership, ~ components$csize[.x] >= min_size)
+    clusters           <- tibble::tibble(sequence_name = names(retain_assignments), cluster = retain_assignments)
+  return(clusters)
+}
+
+dna <- read.dna(file = "C:/Users/hking/OneDrive/my documents/UW/SHARP & Farquahar Lab/phylogenetic/All.HCV_n63_2020.10.06.fa", format="fasta")
+class(dna)
+
+tn93.02.hcv <- cluster_by_TN93(dna)
+```
+
+
+# extract ptid from FASTA file 
+```{r, eval = FALSE, echo = FALSE}
+#sequences / fasta file
+seq.hcv <- read.table(".fasta")
+#extract ptids as a vector
+seq_ptid.hcv <- seq.hcv %>%
+  #extract only sequence identifiers
+  filter(grepl(">", V1)) %>%
+  #Remove '>' because this will not show up in imported tree file
+  dplyr::mutate(
+    V1 = gsub(">", "", V1)) %>%
+  #extract as a vector
+  pull(V1)
+
+```
+
+
+
+# Save HCV seq date as a dataframe
+```{r, eval = FALSE, echo=FALSE}
+seq2 <- read.table("C:/Users/hking/OneDrive/my documents/UW/SHARP & Farquahar Lab/phylogenetic/all.hcv_n197_2021.08.12 extraction.fasta")
+
+ptid_list <- c()
+seq_list <- c()
+for (row in 1:nrow(seq2)) {
+  #extract row
+  my_row <- seq2[row, 1]
+  #If the line does not start with ">" (ie. is a sequence line)
+  if (!grepl(">", my_row)) {
+    seq_list <- append(seq_list, my_row)
+  } else {
+    #add the ptid line (minus the ">") to the ptid_list vector
+    ptid_list <- append(ptid_list, gsub(">", "", my_row))
+  }
+}
+
+#Combine into a dataframe (the first value of seq_list is empty, so remove that)
+seq.df <- cbind(ptid = as.numeric(ptid_list), seq = seq_list)  
+write.csv(seq.df, file = "hcv_seq_df.csv")
+#remove dataframe because it's very large
+rm(seq.df)
+```
