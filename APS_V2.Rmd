@@ -1,0 +1,3327 @@
+---
+title: "APS"
+author: "Hanley"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+
+# NOTES  
+In this version, I have moved all the necessary files into the same folder as this script and all outputs will be saved directly to this folder - no files in this folder should be changed after final submission! To see file paths to the dynamic files, see the APS.Rmd fle under scripts. WARNING: after 05/07/2023, changes to files, like the metadata, will not be reflected outputs of this script. 
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(arsenal)
+#library(table1)
+library(Hmisc)
+
+library(plyr)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+
+library(ggplot2)
+library(ggpubr)
+library(ggtree)
+library(phangorn)
+```
+
+
+
+```{r}
+
+tableby_controls <- tableby.control(
+    numeric.stats = c("Nmiss", "meansd", "medianq1q3"),
+    cat.stats = c("Nmiss", "countpct"),
+    date.stats = c("Nmiss", "median", "range"),
+    numeric.test = "notest",
+    cat.test = "notest",
+    test.pname = "",
+    digits = 1,
+    digits.pct = 1,
+    simulate.p.value = FALSE)
+
+n_resamples <- 2000 #set to 2000 for real runs
+set.seed <- 11
+```
+
+## FUNCTION: read distance matrices
+reformat names in the distance matrix
+```{r}
+read_dist_matrix <- function(file) {
+  dist_matrix <- read.csv(file) %>%
+    plyr::mutate(X = gsub("\\|.*", "", X) %>% gsub("_PRRT", "", .) %>% #Remove everything after the "|" (this will only affect SHARP sequences because published sequences use "." s a deliminator)
+    gsub("_.*_.*", "", .)) %>% #sometimes "_" is used instead of "|", so delete everything after this too
+    column_to_rownames(var = "X") %>%
+    rename_with( ~ gsub("^X", "", .x) %>% gsub("_PRRT", "", .) %>% gsub("_.*_.*", "", .) %>% gsub(" (*)", "", .)) %>%
+    rename_with( ~ sub("(^[0-9]{6,})\\..*", "\\1", .x)) %>% #For SHARP sequences only (which start with numerical ptids, remove everything after the "." - this is to match the metadata names) - note: it's not really necessary to only apply this to SHARP sequences because I'm going to delete the published sequences from the matrix anyway
+    
+    #drop rows and columns pertaining to ref seqs
+    select(-any_of(c("B.FR.1983.HXB2.LAI.IIIB.BRU.K03455", "B.FR.1983.HXB2-LAI-IIIB-BRU.K03455", "D.UG.2008.HIV102918.JN132320", "D.UG.2015.V15-07-114", "D.UG.2015.V15.07.114", "D.UG.2015.V15-07-016", "D.UG.2015.V15.07.016", "D.UG.2008.HIV100832.JN132249", "D.UG.2009.689.KC019050", "D.UG.2007.E0580", "D.UG.2015.1406309.MG434949", "D.UG.2005.16496D", "D.UG.2015.1406284.MG434938", "D.UG.2009.545.KC018925", "D.UG.2008.HIV102963.JN132328", "D.UG.2005.DT2412", "D.TZ.2009.TZ", "D.UG.2015.1406167.MG434907", "D.UG.2008.C0776", "D.UG.2005.16496D_P1.GQ409586", "D.UG.2007.E0580_1.JN652183", "D.UG.2008.C0776_B.JN652145" , "D.UG.2015.V15.07.016_1257019.G.MF565536", "D.UG.2015.V15.07.114_1254471.S.MF565616", "D.UG.2015.V15-07-016_1257019-G.MF565536", "D.UG.2015.V15-07-114_1254471-S.MF565616"))) %>%
+    filter(!(row.names(.) %in% c("B.FR.1983.HXB2.LAI.IIIB.BRU.K03455", "B.FR.1983.HXB2-LAI-IIIB-BRU.K03455", "D.UG.2008.HIV102918.JN132320", "D.UG.2015.V15-07-114", "D.UG.2015.V15.07.114", "D.UG.2015.V15-07-016", "D.UG.2015.V15.07.016", "D.UG.2008.HIV100832.JN132249", "D.UG.2009.689.KC019050", "D.UG.2007.E0580", "D.UG.2015.1406309.MG434949", "D.UG.2005.16496D", "D.UG.2015.1406284.MG434938", "D.UG.2009.545.KC018925", "D.UG.2008.HIV102963.JN132328", "D.UG.2005.DT2412", "D.TZ.2009.TZ", "D.UG.2015.1406167.MG434907", "D.UG.2008.C0776", "D.UG.2005.16496D_P1.GQ409586", "D.UG.2007.E0580_1.JN652183", "D.UG.2008.C0776_B.JN652145" , "D.UG.2015.V15.07.016_1257019.G.MF565536", "D.UG.2015.V15.07.114_1254471.S.MF565616", "D.UG.2015.V15-07-016_1257019-G.MF565536", "D.UG.2015.V15-07-114_1254471-S.MF565616"))) %>%
+    as.matrix()
+  
+  return(dist_matrix)
+}
+
+```
+
+# Read in and format data
+
+# Trees and metadata
+```{r}
+# Participant data - make sure all ptids are read in as characters (they should have been saved as characters to begin with, but do this to be safe)
+participants_all_enrollments <- readRDS("./inputs/participants_all_enrollments_SHARP.rds") %>% mutate(ptid = as.character(ptid), index_ptid = as.character(index_ptid))
+data.all <- readRDS("./inputs/participants_SHARP.rds") %>% mutate(ptid = as.character(ptid), index_ptid = as.character(index_ptid))
+data.hiv <- readRDS("./inputs/participants.SHARP_hiv.rds") %>% mutate(ptid = as.character(ptid), index_ptid = as.character(index_ptid))
+
+SHARP_ptids <- data.hiv$ptid
+bad_align_ptids <- c("769255513414", "776466625834", "528283064425", "835541018918", "485165196542", "709211805679", "352865290447", "682793501524", "560612760431", "790534420019") #These are the 9 ptids I excluded based on alignment diagnostics in Geneious, plus 1 for missing epi data (this is only used to get some summary counts to explain missing data). See: https://uwnetid-my.sharepoint.com/:w:/r/personal/brguth_uw_edu/_layouts/15/Doc.aspx?sourcedoc=%7B5FBFCA21-BAFD-4836-BD11-13F8C35DF692%7D&file=HIV_analysis_steps.docx&action=default&mobileredirect=true
+
+
+
+# Trees (these are used only for distances checks and visualization)
+
+#SHARP-only
+#trees
+tree.SHARP_hiv <- readRDS("./inputs/tree.SHARP_hiv.rds")
+tree.SHARP_hiv.meta <- readRDS("./inputs/meta_tree.SHARP_hiv.rds")
+
+#SHARP and published
+tree.hiv <- readRDS("./inputs/tree.hiv.rds")
+tree.hiv.meta <- readRDS("./inputs/meta_tree.hiv.rds")
+```
+
+Not all ptids were saved as characters, so I'm converting to characters when reading in metadata - fix this is in the clean metadata script!  
+Remove SHARP_only data before parasitic distance analysis to avoid accidentally using this data when I want to use the full-phylogeny?
+
+
+## Read in and compare differnt distance measures
+Note: any file where the path includes "check_only" was ultimately not used in the analysis (the distances were only used in this block for QC and comparison purposes). 
+```{r}
+
+# Patristic distance - this is based on the SHARP-only phylogenetic tree
+SHARP_hiv.Patristic <- read_dist_matrix("./inputs/checks_only/SHARP_303_all_subtypes.patristic_distances.csv") # This is not used in analy analyses - it's only inclluded as a check
+
+
+# Patristic distance - this is based on the phylogenetic tree with SHARP and ref seqs (only SHARP distances will be used)
+hiv.Patristic.all <- read_dist_matrix("./inputs/checks_only/SHARP_and_published_1255_all_subtypes.patristic distances.csv")
+#filter to only SHARP sequences 
+hiv.Patristic.all <- hiv.Patristic.all[rownames(hiv.Patristic.all) %in% SHARP_ptids, colnames(hiv.Patristic.all) %in% SHARP_ptids]
+rownames(SHARP_hiv.Patristic)[!(rownames(SHARP_hiv.Patristic) %in% rownames(hiv.Patristic.all))] #This should be 0 
+identical(sort(colnames(hiv.Patristic.all)), sort(colnames(SHARP_hiv.Patristic))) #This should be TRUE
+
+
+# Patrsitic_distance - extracted from tree in R instead of reading into geneious prime
+hiv.patrisitic.all.check <- cophenetic.phylo(tree.hiv)
+
+#filter to only SHARP sequences 
+hiv.patrisitic.all.check <- hiv.patrisitic.all.check[rownames(hiv.patrisitic.all.check) %in% SHARP_ptids, colnames(hiv.patrisitic.all.check) %in% SHARP_ptids]
+diag(hiv.patrisitic.all.check) <- NA
+
+
+# Patristic distances from SHARP-only neighbor-joining tree
+SHARP_hiv.Patristic_neighbor_join <- read_dist_matrix("./inputs/checks_only/SHARP_303_all_subtypes.neighbor_joining.patristic_distances.csv")
+
+
+# Percent differences (from Geneious)
+hiv.Percent <- 1-read_dist_matrix("./inputs/checks_only/SHARP_303_percent_differences.csv")/100
+
+## Order matrices (only necissary for comparing between distance matrices) 
+hiv.Percent <- hiv.Percent[rownames(hiv.Patristic.all), colnames(hiv.Patristic.all)]
+identical(rownames(hiv.Percent), rownames(hiv.Patristic.all)) &
+identical(colnames(hiv.Percent), colnames(hiv.Patristic.all)) #check
+#hiv.Percent[upper.tri(hiv.Percent)] <- NA #Drop top-triangle (duplicate distances)
+
+
+
+
+# TN93 % differences (calcualted from fasta)
+
+SHARP.fasta <- read.FASTA("./inputs/sharp_hiv_303.fasta")
+
+SHARP_TN93.dist <- dist.dna(SHARP.fasta, model = "TN93", as.matrix = TRUE, pairwise.deletion = TRUE)
+rownames(SHARP_TN93.dist) <- gsub("\\|.*", "", rownames(SHARP_TN93.dist)) %>%
+  gsub("_PRRT", "", .) %>% gsub("_.*_.*", "", .) %>% gsub("^X", "", .) #fix row and column names
+colnames(SHARP_TN93.dist) <- gsub("\\|.*", "", colnames(SHARP_TN93.dist)) %>%
+  gsub("_PRRT", "", .) %>% gsub("_.*_.*", "", .) %>% gsub("^X", "", .)
+diag(SHARP_TN93.dist) <- NA #Make diagonol (ie. self-comparison) NA to avoid accidentally counting as 0 distances
+
+## Order matrices (only necissary for comparing between distance matrices) 
+SHARP_TN93.dist <- SHARP_TN93.dist[rownames(hiv.Patristic.all), colnames(hiv.Patristic.all)]
+identical(rownames(SHARP_TN93.dist), rownames(hiv.Patristic.all)) &
+identical(colnames(SHARP_TN93.dist), colnames(hiv.Patristic.all)) #check
+#SHARP_TN93.dist[upper.tri(SHARP_TN93.dist)] <- NA #Drop top-traingle (duplicate distances)
+
+
+
+
+# Visualize differences in distances
+
+## Find differences - patristic distance vs % diff vs % diff
+difference_matrix1 <- hiv.Patristic.all - hiv.Percent
+hist(difference_matrix1)
+
+## Find differences - patristic distance vs TN93 % diff
+difference_matrix2 <- hiv.Patristic.all - SHARP_TN93.dist
+hist(as.vector(difference_matrix2))
+summary(as.vector(difference_matrix2))
+
+## Find differences - patristic distance (from SHARP-only tree) vs TN93 % diff
+difference_matrix3 <- SHARP_hiv.Patristic - SHARP_TN93.dist
+hist(as.vector(difference_matrix3))
+summary(as.vector(difference_matrix3))
+
+## Find differences - TN93 % diff vs % diff
+difference_matrix4 <- SHARP_TN93.dist - hiv.Percent
+hist(difference_matrix4)
+
+
+
+# Plot all distances
+png("./outputs/distance_differences_by_method.png")
+par(mfrow = c(3, 2))
+hist(hiv.Patristic.all, main = "A. Patristic distances\n(Tree includes Kenya ref seqs -\nonly SHARP distances used)",
+     breaks = seq(0,.5,.01), xlim = c(0,0.5), ylim = c(0,14000))
+hist(hiv.patrisitic.all.check, main = "B. Patristic distances\n(Should exactly match A -\ndistances are extracted using Ape in R as QC check)",
+     breaks = seq(0,.5,.01), xlim = c(0,0.5), ylim = c(0,14000))
+hist(SHARP_hiv.Patristic, main = "C. Patristic distances\n(Tree includes  only SHARP seqs)",
+     breaks = seq(0,.5,.01), xlim = c(0,0.5), ylim = c(0,14000))
+hist(SHARP_hiv.Patristic_neighbor_join, main = "D. Patristic distances\n(SHARP tree made with neighbor joining and TN distances)",
+     breaks = seq(0,.5,.01), xlim = c(0,0.5), ylim = c(0,14000))
+hist(hiv.Percent, main = "E. Uncorrected Percent differences\n(from Genious)",
+     breaks = seq(0,.5,.01), xlim = c(0,0.5), ylim = c(0,14000))
+hist(SHARP_TN93.dist, main = "F. TN93 distances",
+     breaks = seq(0,.5,.01), xlim = c(0,0.5), ylim = c(0,14000))
+dev.off()
+#note: upper-triangle has not been removed from matrixes so each distance is duplicated
+```
+
+
+#### Delete files to avoid errors
+Based on the above, I've chosen to use the TN93 % differences for the distance matrix (these are not tree-based and don't depend on reference sequences)
+```{r}
+rm(difference_matrix1)
+rm(difference_matrix2)
+rm(difference_matrix3)
+rm(difference_matrix4)
+
+rm(SHARP.fasta)
+
+rm(hiv.Patristic)
+rm(hiv.Patristic.all)
+rm(hiv.patrisitic.all.check)
+rm(hiv.Patristic.all)
+rm(SHARP_hiv.Patristic)
+rm(hiv.Percent)
+
+```
+
+
+# Assign TN93 patrsitic distances as the primary distance matrix
+```{r}
+hiv.Patristic <- SHARP_TN93.dist
+rm(SHARP_TN93.dist)
+```
+
+
+## Basic Data summary
+```{r}
+nrow(participants_all_enrollments)
+nrow(data.all)
+nrow(data.hiv)
+tree.SHARP_hiv$Nnode
+nrow(tree.SHARP_hiv.meta)
+tree.hiv$Nnode
+nrow(tree.hiv.meta)
+dim(hiv.Patristic)
+
+
+#CHECKS 1-2
+
+#This should be True:
+all(SHARP_ptids %in% tree.hiv$tip.label)
+
+#This should be true 
+is.grouped_df(participants_all_enrollments)
+```
+
+
+# Analyze partner pairs
+## Create a dataframe of all unique pairs
+```{r}
+#Get an edge list linking partners and indexes in dataset - note: must start with the whole dataset in order to consider pairs identified during any enrollment not just the first enrollment we're using
+index_partners_edge <- participants_all_enrollments %>%
+  ungroup() %>%
+  #mutate(firstpositivehivtesttime_y.index = ,
+  #       avg_time_since_diagnosis = firstpositivehivtesttime_y*12)
+  select(ptid, index_ptid, partner_type, partner_type_comb.F, region.CN, sex, hiv_status_final.F, firstpositivehivtesttime_y, date_HIV_diagnosis.F, years_since_HIV_diagnosis, hivtestbeforepositive,  arvcurrent_combo, shareneedles.F, rcdmoneysex, hiv_vl.cat, COMET_subtype.F, hcv_COMET_subtype.F , previous_HCV_diagnosis.F, sharedneedle)
+```  
+
+
+```{r}
+# Add relevant variables pertaining to the naming index
+#initialize new columns for indexes
+index_partners_edge <- left_join(index_partners_edge, data.frame(
+  region.index = factor(levels = levels(index_partners_edge$region.CN)),
+  sex.index = character(),
+  years_since_HIV_diagnosis.index = numeric(),
+  date_HIV_diagnosis.index = as.Date(character()),
+  hivtestbeforepositive.index = character(),
+  arvcurrent_combo.index = character(),
+  shareneedles.index = character(),
+  rcdmoneysex.index = character(),
+  hiv_vl.cat.index = factor(levels = levels(index_partners_edge$hiv_vl.cat)),
+  COMET_subtype.index = factor(levels = levels(index_partners_edge$COMET_subtype.F)),
+  hcv_COMET_subtype.index = factor(levels = levels(index_partners_edge$hcv_COMET_subtype.F))),
+  by = character())
+#populate with index characteristics
+
+for (i in 1:nrow(index_partners_edge)) {
+      #get the ptid for the index:
+      index_ptid <- index_partners_edge[i,]$index_ptid #data.all includes only the first enrollment for each index
+       index_values <- data.all[data.all$ptid == index_ptid, c("region.CN", "sex", "years_since_HIV_diagnosis", "date_HIV_diagnosis.F", "hivtestbeforepositive", "arvcurrent_combo", "shareneedles.F", "rcdmoneysex", "hiv_vl.cat", "COMET_subtype.F", "hcv_COMET_subtype.F")][1, , drop = TRUE] #[1,] because just using 1st enrollment)
+      index_partners_edge$region.index[i] <- index_values$region.CN
+      index_partners_edge$sex.index[i] <- index_values$sex
+      index_partners_edge$years_since_HIV_diagnosis.index[i] <- index_values$years_since_HIV_diagnosis
+      index_partners_edge$date_HIV_diagnosis.index[i] <- index_values$date_HIV_diagnosis.F
+      index_partners_edge$hivtestbeforepositive.index[i] <- index_values$hivtestbeforepositive
+      index_partners_edge$arvcurrent_combo.index[i] <- index_values$arvcurrent_combo
+      index_partners_edge$shareneedles.index[i] <- as.character(index_values$shareneedles.F)
+      index_partners_edge$rcdmoneysex.index[i] = as.character(index_values$rcdmoneysex)
+      index_partners_edge$hiv_vl.cat.index[i] <- index_values$hiv_vl.cat
+      index_partners_edge$COMET_subtype.index[i] <- index_values$COMET_subtype.F
+      index_partners_edge$hcv_COMET_subtype.index[i] <- index_values$hcv_COMET_subtype.F
+  }
+
+ 
+ 
+ ## Spot CHECK 5 - make sure these match
+ index_partners_edge %>%
+   filter(index_ptid == "266985647900") %>%
+   select(c("ptid", "index_ptid", "region.index", "sex.index", "years_since_HIV_diagnosis.index", "date_HIV_diagnosis.index", "hivtestbeforepositive.index", "arvcurrent_combo.index", "shareneedles.index", "hiv_vl.cat.index", "COMET_subtype.index", "hcv_COMET_subtype.index"))
+ 
+ data.all %>%
+   filter(ptid == "266985647900") %>%
+   select(c("ptid", "index_or_partner.F", "region.CN", "sex", "years_since_HIV_diagnosis", "date_HIV_diagnosis.F", "hivtestbeforepositive", "arvcurrent_combo", "shareneedles.F", "hiv_vl.cat", "COMET_subtype.F", "hcv_COMET_subtype.F"))
+```
+
+
+### Add pairwise variables
+```{r}
+add_index_data_to_edge_list <- function(edge_list){
+
+  #Add columns to edge_list for variables of interest
+  edge_list <- edge_list %>%
+    mutate(
+      partner_type_sexual_or_injecting_only = ifelse(
+        partner_type == "Both sexual&injecting", as.character(NA),
+        partner_type) %>% 
+         #Note: pairs where the partner was identified as both sexual and injecting are excluded
+        factor(levels = c("Injecting", "Sexual")),
+      
+      region.CN = factor(region.CN, levels = c("Coast", "Nairobi")),
+      same_region = ifelse(region.CN == region.index, "Yes", "No"),
+      
+      avg_time_since_diagnosis =  (years_since_HIV_diagnosis + years_since_HIV_diagnosis.index)/2,
+      diagnoses_recency = case_when(
+        avg_time_since_diagnosis <= 2 ~ "recent", 
+        avg_time_since_diagnosis > 3 ~ "not_recent", #3 years because that is the time-frame in which indexes were asked about partners
+        TRUE ~ as.character(NA)) %>%
+        factor(levels = c("not_recent", "recent")),
+      
+      years_seperating_HIV_diagnosis = abs(difftime(date_HIV_diagnosis.F, date_HIV_diagnosis.index, units = "weeks"))/52, #units = years (difftime only goes up to weeks, which is why I'm multiplying by 52)
+      diagnosis_similar_times = case_when(
+        years_seperating_HIV_diagnosis <= 2 ~ "similar",
+        years_seperating_HIV_diagnosis > 3 ~ "dissimilar",
+        TRUE ~ as.character(NA)
+        ) %>% factor(levels = c("dissimilar", "similar")),
+  
+       pair_prior_pos.cat = case_when(
+         (hivtestbeforepositive == "Yes (tested positive)" | hivtestbeforepositive == "Yes (told have HIV)") &
+           (hivtestbeforepositive.index == "Yes (tested positive)" | hivtestbeforepositive.index == "Yes (told have HIV)") ~ "Ref: both previously tested positive",
+         (hivtestbeforepositive == "Yes (tested positive)" | hivtestbeforepositive == "Yes (told have HIV)") &
+           hivtestbeforepositive.index == "No" ~ "one partner previously tested positive",
+         (hivtestbeforepositive.index == "Yes (tested positive)" | hivtestbeforepositive.index =="Yes (told have HIV)") &
+           hivtestbeforepositive == "No" ~ "one partner previously tested positive",
+         hivtestbeforepositive == "No" & hivtestbeforepositive.index == "No" ~ "neither partner previously tested positive",
+         TRUE ~ as.character(NA)) %>%
+         factor(levels = c("Ref: both previously tested positive", "one partner previously tested positive", "neither partner previously tested positive")),
+       
+       pair_arv.cat = case_when(
+         arvcurrent_combo == "Yes" & arvcurrent_combo.index == "Yes" ~ "Ref: Both partners on ART at enrollment",
+         arvcurrent_combo == "Yes" & arvcurrent_combo.index == "No" ~ "One partner on ART at enrollment",
+         arvcurrent_combo.index == "Yes" & arvcurrent_combo == "No" ~ "One partner on ART at enrollment",
+         arvcurrent_combo == "No" & arvcurrent_combo.index == "No" ~ "Neither partner on ART at enrollment",
+         TRUE ~ as.character(NA)) %>%
+         factor(levels = c("Ref: Both partners on ART at enrollment", "One partner on ART at enrollment", "Neither partner on ART at enrollment")),
+      
+      pair_shareneedles = case_when(
+        (shareneedles.F == "No" | shareneedles.F == "have not injected in the last month") & (shareneedles.index == "No" | shareneedles.index == "have not injected in the last month") ~ "Ref: Neither partner shared needles",
+        shareneedles.F == "Yes" | shareneedles.index == "Yes" ~ "One or both partners shared needles",
+        TRUE ~ as.character(NA)) %>%
+        factor(levels = c("Ref: Neither partner shared needles", "One or both partners shared needles")),
+      
+       pair_shareneedles_eachother = case_when(
+        sharedneedle == 1 ~ "Yes",
+        sharedneedle == 0 ~ "Ref: No",
+        TRUE ~ as.character(NA)) %>%
+        factor(levels = c("Ref: No", "Yes")),
+      
+      pair_rcdmoneysex = case_when(
+        rcdmoneysex == "No" & rcdmoneysex.index == "No" ~ "Ref: Neither partner received money for sex",
+        (rcdmoneysex == "No" & rcdmoneysex.index == "Yes") |
+          (rcdmoneysex == "Yes" & rcdmoneysex.index == "No") ~ "One partner received money for sex",
+        rcdmoneysex == "Yes" & rcdmoneysex.index == "Yes" ~ "Both partners received money for sex",
+        TRUE ~ as.character(NA)) %>%
+        factor(levels = c("Ref: Neither partner received money for sex", "One partner received money for sex", "Both partners received money for sex")),
+       
+       pair_hiv_vl.cat = case_when(
+         hiv_vl.cat == "<1,000" & hiv_vl.cat.index == "<1,000" ~ "Ref: one or both partners virally suppressed",
+         hiv_vl.cat == "<1,000" & (hiv_vl.cat.index == "1,000-10,000" | hiv_vl.cat.index == ">=10,000") ~ "Ref: one or both partners virally suppressed",
+         hiv_vl.cat.index == "<1,000" & (hiv_vl.cat == "1,000-10,000" | hiv_vl.cat == ">=10,000") ~ "Ref: one or both partners virally suppressed",
+         (hiv_vl.cat == "1,000-10,000" | hiv_vl.cat == ">=10,000") &
+           (hiv_vl.cat.index == "1,000-10,000" | hiv_vl.cat.index == ">=10,000") ~ "neither partner virally suppressed",
+         TRUE ~ as.character(NA)) %>%
+         factor(levels = c("Ref: one or both partners virally suppressed", "neither partner virally suppressed")),
+      
+      pair_HIV_subtype = case_when(
+        is.na(COMET_subtype.F) | is.na(COMET_subtype.index) |
+          COMET_subtype.F == "recombinant" | COMET_subtype.index == "recombinant" |
+          COMET_subtype.F == "unassigned" | COMET_subtype.index == "unassigned" ~ as.character(NA),
+        COMET_subtype.F != COMET_subtype.index ~ "different HIV subtypes",
+        COMET_subtype.F == COMET_subtype.index ~ "same HIV subtype",
+        TRUE ~ as.character(NA)) %>%
+        factor(levels = c("same HIV subtype", "different HIV subtypes")),
+      
+      pair_HCV_subtype = case_when(
+        is.na(hcv_COMET_subtype.F) | is.na(hcv_COMET_subtype.index) |
+          hcv_COMET_subtype.F == "recombinant" | hcv_COMET_subtype.index == "recombinant" |
+          hcv_COMET_subtype.F == "unassigned" | hcv_COMET_subtype.index == "unassigned" ~ as.character(NA),
+        hcv_COMET_subtype.F != hcv_COMET_subtype.index ~ "different HCV subtypes",
+        hcv_COMET_subtype.F == hcv_COMET_subtype.index ~ "same HCV subtype",
+        TRUE ~ as.character(NA)) %>%
+        factor(levels = c("different HCV subtypes", "same HCV subtype")),
+      
+      hiv_partner_pair = case_when(
+        ptid %in% data.hiv$ptid & index_ptid %in% data.hiv$ptid ~ "Yes",
+        TRUE ~ "No") %>% factor(levels = c("No", "Yes"))
+      )
+}
+
+index_partners_edge <- add_index_data_to_edge_list(index_partners_edge)
+
+```
+
+
+
+## Extract an edge list for only partner pairs where both have an HIV seq
+```{r}
+#filter to only partner pairs where both individuals have an HIV sequences
+index_partners_edge.hiv <- index_partners_edge %>% filter(hiv_partner_pair == "Yes") 
+
+#Number of unique participants with a paired partner in hiv data
+unique_paired_participants <- unique(c(index_partners_edge.hiv[,"ptid", drop = TRUE], index_partners_edge.hiv[,"index_ptid", drop = TRUE]))
+
+#pairs with a reverse duplicate (same individuals but index and partner are reversed) in the data
+edge_list_ordered.temp <- index_partners_edge.hiv[, c("ptid", "index_ptid")] %>%
+  apply(1, sort) %>%
+  t()
+inverse_ptid_index_ptid <- index_partners_edge.hiv[duplicated(edge_list_ordered.temp) | duplicated(edge_list_ordered.temp, fromLast = TRUE), c("ptid", "index_ptid", "partner_type")] %>%
+  arrange(ptid, index_ptid)
+inverse_ptid_index_ptid 
+
+#Save duplicate table to count duplicate types
+write.csv(inverse_ptid_index_ptid, "./outputs/invers_duplicates.csv")
+```
+
+
+### Explore time-since diagnosis and related varaibles to choose logical cut points
+```{r}
+#Individual variables
+hist(data.hiv$years_since_HIV_diagnosis) #Note: for analysis, anyone who tested positive for the first time through SHARP study will be included in the recent pos group
+
+#Pairs variables
+hist(index_partners_edge.hiv$avg_time_since_diagnosis)
+```
+**Base on this, I made avg time since diagnosis:**  
+Recent: <=2 years ; not_recent: >3 years   
+**Similarity of diagnosis time:**  
+Similar: <=2 years ; dissimilar: > 3 years   
+
+
+## Filter data
+```{r}
+#Get filter lists (of ptids) for partner types of interest
+sexual_only.edge <- index_partners_edge.hiv %>% filter(
+  partner_type_sexual_or_injecting_only == "Sexual")
+#Note: use partner_type (not partner_type_comb.F) because partner type should match the type that person was for the given index
+
+injecting_only.edge <- index_partners_edge.hiv %>% filter(
+  partner_type_sexual_or_injecting_only == "Injecting")
+
+needle_sharing.edge <- index_partners_edge.hiv %>% filter(
+  sharedneedle == 1)
+
+#all_partners <- data.hiv %>% filter(!is.na(partner_type) & ptid %in% index_partners_edge.hiv$ptid) %>% pull(ptid)
+
+#Get filter lists (of row numbers) for index-partner pair types of interest
+#recency of diagnosis
+recent_diagnoses <- 
+  which(index_partners_edge.hiv$diagnoses_recency  == "recent") 
+
+not_recent_diagnoses <-
+  which(index_partners_edge.hiv$diagnoses_recency  == "not_recent")
+
+#similarity of diagnosis time
+similar_diagnoses_times <-
+  which(index_partners_edge.hiv$diagnosis_similar_times == "similar")
+
+dissimilar_diagnoses_times <-
+  which(index_partners_edge.hiv$diagnosis_similar_times == "dissimilar")
+```
+
+
+### CHECK 6: proper variable transformations
+```{r}
+#Are any partners missing an index region value - this should be 0
+sum(is.na(index_partners_edge.hiv[!is.na(index_partners_edge.hiv$index_ptid),]$region.index)) 
+
+#Note: all indexes and partners are from the same region
+table(index_partners_edge[,c("region.index", "region.CN")], useNA = "ifany") #all
+table(index_partners_edge.hiv[, c("region.index", "region.CN")], useNA = "ifany") #among those with HIV sequences
+
+## Partner type
+table(index_partners_edge[,c("partner_type_sexual_or_injecting_only", "partner_type")], useNA = "ifany")
+
+## Same region
+table(index_region = index_partners_edge$same_region, useNA = "ifany") #all
+table(index_region = index_partners_edge.hiv$same_region, useNA = "ifany") #among those with HIV sequences
+
+## Avg time since diagnosis
+hist(index_partners_edge.hiv$avg_time_since_diagnosis, seq(from=0, to = max(index_partners_edge.hiv$avg_time_since_diagnosis), by = 1))
+table(time_since_diagnosis = index_partners_edge.hiv$diagnoses_recency, useNA = "ifany") #Note:recent is <=3 years and not recent is > 3 years
+
+## Diff in diagnosis time      
+hist(as.numeric(index_partners_edge.hiv$years_seperating_HIV_diagnosis), breaks = 10, ylim = c(0,70))
+hist(abs(index_partners_edge.hiv$years_since_HIV_diagnosis - index_partners_edge.hiv$years_since_HIV_diagnosis.index), breaks = 10, ylim = c(0,70)) #these don't perfectly match because I used the actual date of diagnosis to more accurately get the time separating diagnosis, but they are close, as I would expect
+
+## Prior pos test
+table(index_partners_edge.hiv[, c("hivtestbeforepositive.index", "hivtestbeforepositive")], useNA = "ifany")
+table(pair_pos_test = index_partners_edge.hiv$pair_prior_pos.cat, useNA = "ifany")
+
+## ARV
+table(index_partners_edge.hiv[, c("arvcurrent_combo.index", "arvcurrent_combo")], useNA = "ifany")
+table(pair_arv = index_partners_edge.hiv$pair_arv.cat, useNA = "ifany")
+
+## Share needles
+table(index_partners_edge.hiv[, c("shareneedles.index", "shareneedles.F")], useNA = "ifany")
+table(pair_share_needles = index_partners_edge.hiv$pair_shareneedles, useNA = "ifany")
+
+## HIV VL
+table(index_partners_edge.hiv[, c("hiv_vl.cat.index", "hiv_vl.cat")], useNA = "ifany")
+table(pair_vl = index_partners_edge.hiv$pair_hiv_vl.cat, useNA = "ifany")
+
+## HIV subtype
+table(index_partners_edge.hiv[, c("COMET_subtype.index", "COMET_subtype.F")], useNA = "ifany")
+table(pair_hiv_subtype = index_partners_edge.hiv$pair_HIV_subtype, useNA = "ifany")
+
+## HCV subtype
+table(index_partners_edge[, c("hcv_COMET_subtype.index", "hcv_COMET_subtype.F")], useNA = "ifany")
+table(pair_hcv_subtype = index_partners_edge$pair_HCV_subtype, useNA = "ifany")
+
+## This should be True
+all(index_partners_edge.hiv$hiv_partner_pair == "Yes")
+
+```
+
+
+## Summary stats
+```{r}
+#Participants
+paste("Number of unique participants in dataset:", length(unique(data.all[data.all$source == "SHARP",]$ptid)))
+paste("Number of unique participants living with HIV:", sum(data.all$hiv_status_final.F == "Positive", na.rm = TRUE))
+paste("Number of unique participants not virally suppressed:", sum(data.all$viralsup == "Not virally suppressed", na.rm = TRUE))
+paste("Number of unique participants with an HIV sequence:", nrow(data.hiv))
+paste("Number of unique participants with a named pair in hiv data:", length(unique_paired_participants))
+"Counts of indexes and partners:"
+table(data.hiv$index_or_partner.F)
+
+# Pairs
+paste("Number of total index-partner pairs in total data:", nrow(index_partners_edge))  
+paste("Number of total index-partner pairs in total data where both individuals live with HIV:",
+      participants_all_enrollments %>% filter(hiv_status_final.F == "Positive" & !is.na(index_ptid)) %>% nrow()) # since HIV pos is a criteria for an index, this is the number of index-partner pairs where both individuals were HIV positive
+paste("Number of total index-partner pairs in total data with sequences:", nrow(index_partners_edge.hiv))
+paste(sum(index_partners_edge.hiv$same_region == "Yes"), "of", nrow(index_partners_edge.hiv), "pairs are from the same region")
+"partner-type in index-partner pairs:"
+table(index_partners_edge.hiv$partner_type)
+paste("Number of pairs with a reverse duplicate (same indivduals but index and pertner are reversed) in the data:", nrow(inverse_ptid_index_ptid))
+table(index_partners_edge.hiv$region.CN)
+```
+
+
+# Table 1 for only individuals with HIV seqs in a named pair
+### Pretty names for pairwise variables
+```{r}
+label(index_partners_edge.hiv$partner_type_sexual_or_injecting_only) = "Partner type (excludes those identified as both sexual and injecting partners"
+label(index_partners_edge.hiv$avg_time_since_diagnosis) = "Years since diagnosis - averaged between index and partner (diagnoses prior to enrollment are self-reported)"
+label(index_partners_edge.hiv$years_seperating_HIV_diagnosis) = "Number of years separating index-partner diagnoses (diagnoses prior to enrollment are self-reported)"
+label(index_partners_edge.hiv$pair_prior_pos.cat) = "Positive HIV diagnosis prior to enrollment"
+label(index_partners_edge.hiv$pair_arv.cat) = "ART use at enrollment"
+label(index_partners_edge.hiv$pair_shareneedles) = "Shared needles in last month"
+label(index_partners_edge.hiv$pair_shareneedles_eachother) = "Shared needles or injecting equipment with named partner"
+label(index_partners_edge.hiv$pair_rcdmoneysex) = "Ever received money or goods for sex"
+label(index_partners_edge.hiv$pair_hiv_vl.cat) = "Viral suppression (<1,000 copies/ml at enrollment)"
+label(index_partners_edge.hiv$pair_HIV_subtype) = "shared HIV subtype"
+```
+
+### Generate Table 1 for all participants with seqs and, seperately, for those with seqs and a partner with a seq
+```{r}
+
+#All participants with HIV sequences and a partner with HIV sequence
+data.hiv_with_partner_pairs <- data.hiv[data.hiv$ptid %in% unique_paired_participants, ]
+nrow(data.hiv_with_partner_pairs)
+
+#Add a variable to data.hiv indicating whether the participant is a partner, an index, or both & whether they are a sexual or injecting partner in THIS analysis
+data.hiv_with_partner_pairs <- data.hiv_with_partner_pairs %>% mutate(
+  index_or_partner.2.F = case_when(
+    ptid %in% intersect(index_partners_edge.hiv[,"index_ptid", drop = TRUE], index_partners_edge.hiv[,"ptid", drop = TRUE]) ~ "index_and_partner",
+    ptid %in% index_partners_edge.hiv[,"index_ptid", drop = TRUE] ~ "index",
+    ptid %in% index_partners_edge.hiv[,"ptid", drop = TRUE] ~ "partner"
+    ), #is the ptid from an index, partner or both in THIS dataset (ie. limited to partner pairs where both individuals have an HIV sequence)
+  partner_type.2.F = case_when(
+     index_or_partner.2.F != "index" & ptid %in% sexual_only.edge$ptid ~ "sexual",
+     index_or_partner.2.F != "index" & ptid %in% injecting_only.edge$ptid ~ "injecting",
+     index_or_partner.2.F != "index" & ptid %in% data.hiv_with_partner_pairs$ptid ~ "sexual_and_injecting",
+     TRUE ~ as.character(NA)
+  )
+)
+
+
+# All participants living with HIV
+#Caution: index_or_partner.F and partner_type_com.Fb are across all enrollments, so this shouldn't be compared to index_or_partner2.F or partner_type2.F, which are just for the partner pairs included in this dataset
+table1.hiv_pos <- tableby(index_or_partner.F ~
+          partner_type_comb.F + sex + times_enrolled_partner +
+          hiv_status_final.F + hcvresults_final + hiv_vl.cat +
+          hivtestbeforepositive + first_pos_hiv_time.cat + firstpositivehivtesttime_y + arvcurrent +
+          everinjecteddrugs.F + shareneedles.F +shareequipment + years_injecting +
+          sexpartners3months + rcdmoneysex.MF,
+        data = data.all[data.all$hiv_status_final.F == "Positive",],
+        control = tableby_controls)
+
+summary(table1.hiv_pos)
+
+summary(data.all[data.all$hiv_status_final.F == "Positive" & data.all$index_or_partner.F != "index",]$times_enrolled_partner) #Get tiems_enrolled_partner values excluding those who were only indexes
+
+
+setwd("./outputs/")
+write2word(table1.hiv_pos, "APS_table_1.hiv_pos.doc")
+
+# All participants with HIV sequences
+table1.hiv <- tableby(index_or_partner.F ~
+          partner_type_comb.F + sex + times_enrolled_partner +
+          hiv_status_final.F + hcvresults_final + hiv_vl.cat + 
+          hivtestbeforepositive + first_pos_hiv_time.cat + firstpositivehivtesttime_y + arvcurrent +
+          everinjecteddrugs.F + shareneedles.F + shareequipment + years_injecting +
+          sexpartners3months,
+        data = data.hiv,
+        control = tableby_controls)
+
+summary(table1.hiv)
+
+write2word(table1.hiv, "APS_table_1.hiv_seq.doc")
+
+# All participants with an HIV seqeunces and a partner with a sequence
+table1.hiv2 <- tableby(index_or_partner.2.F ~
+          partner_type_comb.F + partner_type.2.F + sex + times_enrolled_partner +
+          hiv_status_final.F + hcvresults_final + hiv_vl.cat +
+          hivtestbeforepositive + first_pos_hiv_time.cat + firstpositivehivtesttime_y + arvcurrent +
+          everinjecteddrugs.F + shareneedles.F +shareequipment + years_injecting +
+          sexpartners3months + rcdmoneysex.MF,
+        data = data.hiv_with_partner_pairs,
+        control = tableby_controls)
+
+summary(table1.hiv2)
+
+write2word(table1.hiv2, "APS_table_1.hiv_pairs_seq.doc")
+
+#I extract the number of times enrolled as a partner in this particular analysis later (after creating the index_partners_edge.hiv table)
+
+setwd("../")
+
+
+
+
+
+# Other stats - reasons for missing sequences
+data.all %>% filter(hiv_status_final.F == "Positive" & !(ptid %in% SHARP_ptids) & !(ptid %in% bad_align_ptids)) %>% #participants living with HIV but no sequence available
+  select(hiv_vl.cat, shipment) %>% table(useNA = "ifany")
+
+```
+
+TO DO: Troubleshoot missing variables. Specifically, why do so many participants not have a "year_since_first_HIV_diangosis value?  
+Generate rcdmoneysex.MF in cloan_metadata script  
+
+
+## Is being a partner pair associated with sharing an HIV subtype? - NOT USING
+```{r, eval = FALSE}
+ #This is similar to the function add_index_data_to_edge_list() but just not adding as many variables and the edge list is all pairwise comparisons in the phylogenetic tree (rather than only named partner pairs)
+hiv.Patristic2 <- hiv.Patristic
+hiv.Patristic2[upper.tri(hiv.Patristic2)] <- NA
+all_hiv_pairs.edge <- reshape2::melt(hiv.Patristic2) %>%
+  filter(Var1 != Var2 & !is.na(value)) %>%
+  transmute(S1 = as.character(Var1), S2 = as.character(Var2))
+
+#all_hiv_pairs.edge <- left_join(all_hiv_pairs.edge, data.frame(
+#  COMET_subtype.partner = factor(levels = levels(index_partners_edge$COMET_subtype.F)),
+#  hiv_COMET_subtype.index = factor(levels = levels(index_partners_edge$COMET_subtype.F))),
+#  by = character())
+
+for (i in 1:nrow(all_hiv_pairs.edge)){
+  S1 <- all_hiv_pairs.edge$S1[i]
+  S2 <- all_hiv_pairs.edge$S2[i]
+  all_hiv_pairs.edge$hiv_subtypes.S1[i] <- as.character(data.all[data.all$ptid == S1, "COMET_subtype.F"][1, , drop = TRUE]) #[1,] because just using 1st enrollment)
+  all_hiv_pairs.edge$hiv_subtypes.S2[i] <- as.character(data.all[data.all$ptid == S2, "COMET_subtype.F"][1, , drop = TRUE])
+  
+  all_hiv_pairs.edge$region.S1[i] <- as.character(data.all[data.all$ptid == S1, "region.CN"][1, , drop = TRUE])
+  all_hiv_pairs.edge$region.S2[i] <- as.character(data.all[data.all$ptid == S2, "region.CN"][1, , drop = TRUE])
+  
+  indexes1 <- data.all[data.all$ptid == S1, "index_ptids.F"] #indexes naming 1st partner
+  indexes2 <- data.all[data.all$ptid == S2, "index_ptids.F"] #indexes naming 2nd partner
+  all_hiv_pairs.edge$hiv_partner_pair[i] <- ifelse(grepl(S2, indexes1) | grepl(S1, indexes2), "Yes", "No") #If 2nd partner is in indexes naming partner 1 OR 1st partner is in indexes naming partner 2, then they are a named partner pair
+}
+
+all_hiv_pairs.edge <- all_hiv_pairs.edge %>%
+  mutate(
+    pair_HIV_subtype = case_when(
+      is.na(hiv_subtypes.S1) | is.na(hiv_subtypes.S2) |
+      hiv_subtypes.S1 == "recombinant" | hiv_subtypes.S2 == "recombinant" |
+      hiv_subtypes.S1 == "unassigned" | hiv_subtypes.S2 == "unassigned"~ as.character(NA),
+        hiv_subtypes.S1 != hiv_subtypes.S2 ~ "different HIV subtypes",
+        hiv_subtypes.S1 == hiv_subtypes.S2 ~ "same HIV subtype",
+        TRUE ~ as.character(NA)) %>%
+      factor(levels = c("different HIV subtypes", "same HIV subtype")),
+    hiv_partner_pair = factor(hiv_partner_pair, levels = c("No", "Yes"))
+  ) %>%
+  filter(region.S1 == region.S2) #only include pairwise comparisons from the same region. since region may be correlated with subtype, pairs from different regions will probably tend to have more different subtypes
+    
+table(partners = all_hiv_pairs.edge$hiv_partner_pair, subtype = all_hiv_pairs.edge$pair_HIV_subtype)
+
+print("Association between being a named partner pair and sharing an HIV subtype:")
+hiv_subtypeXpartner_pair <- glm(hiv_partner_pair ~ pair_HIV_subtype, data = all_hiv_pairs.edge, family = "binomial")
+summary2 <- exp(coef(summary(hiv_subtypeXpartner_pair)))
+confint2 <- exp(confint(hiv_subtypeXpartner_pair))
+
+
+# Are sexual or injecting partner pairs more likely to share an HIV subtype?
+table(partner_type = index_partners_edge.hiv$partner_type_sexual_or_injecting_only, subtype = index_partners_edge.hiv$pair_HIV_subtype, useNA = "ifany")
+
+hiv_subtypeXpartner_pair_type <-glm(partner_type_sexual_or_injecting_only ~ pair_HIV_subtype, data = index_partners_edge.hiv, family = "binomial")
+summary3 <- exp(coef(summary(hiv_subtypeXpartner_pair_type)))
+confint3 <- exp(confint(hiv_subtypeXpartner_pair_type))
+
+
+## Results
+
+effect_subtypexpartners <- paste0(round(100*summary2[2,1], 1), "% (", round(100*confint2[2,1], 1), "-", round(100*confint2[2,2], 1), ")")
+
+effect_subtypexsexual_partners <- paste0(round(100/summary3[2,1], 1), "% (", round(100/confint3[2,1], 1), "-", round(100/confint3[2,2], 1), ")")
+```
+
+
+
+
+# FUNCTIONS (with examples)
+
+## FUNCTION: extract all non-named partners for each index
+non-named partners must match the original partner by region, sex, and partner type (ie. a partner that was only enrolled as a sexual partner is only a match for a named partner that was enrolled as a sexual or sexual and injecting partner and visa versa) 
+```{r}
+find_control_pairs <- function(edge_list, metadata, partner_filter = NULL, exclude_named_partner = TRUE, exclude_other_partners = TRUE,
+                               match_region = TRUE, match_hiv_sub = FALSE, match_hcv_sub = FALSE
+                               ) {
+  #if include_named_partner is true, the actual named partner will not be included in the pairs list
+  #if include_other_partners is true, all partners of that index regardless of partner type, will be excluded from the pairs list. Note, named partners are identified based on full edge list (index_partners_edge.hiv) NOT the edge list provided 
+  #Partner_filter is used to further filter edge_list to only include some rows (based on partner IDs)
+  
+  #Filter to only partner-types of interest, and check for errors in filtering
+  if(!is.null(partner_filter)){
+    if(any(partner_filter %in% edge_list$ptid)){
+      edge_list <- edge_list %>% filter(ptid %in% partner_filter)
+      if(!all(partner_filter %in% edge_list$ptid)){
+        warning("Some ptids in filter list not present in edge list")
+      }
+    } else if(max(partner_filter) <= nrow(edge_list)){ #ie. partner_filter is provided as indexes
+      edge_list <- edge_list[partner_filter,]
+      warning("Filter provided as  row numbers. Ensure row numbers correspond to edge list to avoid errors")
+    } else {
+      stop("partners in filter vector not present in data, or unrecognized format for filtering. Partner filtering criteria excepts vector of ptids (for partners) or row numbers")
+    }
+    }
+  
+  new_partners.list <- vector("list", nrow(edge_list))
+  names(new_partners.list) <- edge_list$index_ptid
+
+  for(i in 1:nrow(edge_list)){
+    partner <- edge_list[i, "ptid", drop = TRUE]
+    index <- as.character(edge_list[i, "index_ptid", drop = TRUE])
+    
+    all_partners_of_index <- edge_list %>%
+      filter(index_ptid == index) %>% select(ptid) #Get other partners of the index (this only matters if exclude_other_partners is true, because then we won't include them in the control group)
+    partner_region <- metadata[metadata$ptid == partner, "region.CN", drop = TRUE]
+    partner_hiv_sub <- as.character(metadata[metadata$ptid == partner, "COMET_subtype.F", drop = TRUE])
+    partner_hcv_sub <- as.character(metadata[metadata$ptid == partner, "hcv_COMET_subtype.F", drop = TRUE])
+
+    new_partners <- metadata %>%
+      filter(ptid != index) %>% # not the same individual as the index
+      {if(match_region == TRUE) filter(., region.CN == partner_region) else .} %>% # option to make partner have same region as original partner (default = TRUE)
+      {if(exclude_named_partner == TRUE) filter(., ptid != partner) else .} %>% #option to exclude the actual named partner (default = TRUE)
+      {if(exclude_other_partners == TRUE) filter(., !(ptid %in% unlist(all_partners_of_index))) else .} %>% #option to exclude other partners of the index (default = TRUE) - note: only partners in the same subsetted dataframe are excluded (ie. if only looking at sexual partners, injecting partners of the index will not be excluded)
+      {if(match_hiv_sub == TRUE) filter(., COMET_subtype.F == partner_hiv_sub & COMET_subtype.F != "unassigned") else .} %>% # option to make partner have same HIV subtype as original partner (default = FALSE)
+      {if(match_hcv_sub == TRUE) filter(.,hcv_COMET_subtype.F == partner_hcv_sub & hcv_COMET_subtype.F != "unassigned") else .} %>% # option to make partner have same HIV subtype as original partner (default = FALSE)
+      pull(ptid)
+    
+    new_partners.list[[i]] <- new_partners
+  }
+  
+  return(new_partners.list)
+}
+
+## EXAMPLE
+non_named_partners <- find_control_pairs(edge_list = index_partners_edge.hiv, metadata = data.hiv)
+
+non_named_partners[10:12]
+
+lapply(non_named_partners, length) #Available controls for each index are 122 (Coast) or 177 (Nairobi) - total # from that region - the actual index and partner. Other partners of that index are excluded from the control group, which is why the control group differs slightly for each index even from the same region.
+
+
+## CHECK 7 - derive non-named partners list for one index to make sure it matches
+non_named_partners[12]
+data.hiv %>% filter(index_ptid == "893522170222") %>% pull(region.CN) #index's region
+partners_of_index.temp <- index_partners_edge %>% filter(index_ptid == "893522170222") %>% pull(ptid) #partners of index - should be excluded from control group
+expected_controls <- data.hiv %>% filter(!(ptid %in% c(partners_of_index.temp, "893522170222")) & region.CN == "Coast") %>% pull(ptid) #all ptids that should be in control group
+
+#This should be TRUE
+identical(non_named_partners[[12]], expected_controls)
+```  
+
+To do:  
+
+Ensure that the correct edge_list is used to exclude other partners of index in all cases  
+Make sure partner_filt is working correctly (or ideally, remove this argument and require that index_partner edge lists be pre-filtered)
+
+
+## FUNCTION: get distance between pairs of individuals
+#### takes an edge list and distance matrix and returns a vector of differences (or adds as a column to the edge list)
+```{r}
+get_distance <- function(edge_list, dist_matrix, partner_filter = NULL, index = "index_ptid", partner = "ptid", add_as_column = FALSE, NA_ok = FALSE){
+  #partner_filter is an optional vector of partner ptids (corresponding to "ptid" column in edge_list and metadata) to limit analysis to. Alternatively, can be a vector of row_numbers - the function will verify that all row numbers are present in the data before filtering
+  #if add_as_column is FALSE, the distances will instead be returned as a vector
+  #if NA_ok = TRUE, summary measures will ignore NA in distances (use this is some sequences don't overlap (and therefore won't have distances) but be VERY careful because this prevents spotting a problem that causes NA in distances)
+  
+  edge_list$distance <- NA
+  
+  #Filter to only partner-types of interest, and check for errors in filtering
+  if(!is.null(partner_filter)){
+    if(any(partner_filter %in% edge_list$ptid)){ #ie. partner_filter is provided as index ptids
+      edge_list <- edge_list %>% filter(ptid %in% partner_filter)
+      if(!all(partner_filter %in% edge_list$ptid)){
+        warning("Some ptids in filter list not present in edge list")
+      }
+    } else if(max(partner_filter) <= nrow(edge_list)){ #partner_filter is provided as row numbers (this checks that all row numbers are present in edge_list (but does not verify accuracy of row numbers))
+      edge_list <- edge_list[partner_filter,]
+      warning("Filter provided as  row numbers. Ensure row numbers correspond to edge list to avoid errors")
+    } else {
+      stop("partners in filter vector not present in data, or unrecognized format for filtering. Partner filtering criteria excepts vector of ptids or row numbers")
+    }
+    }
+    
+  for(i in 1:nrow(edge_list)){
+    row <- edge_list[i,]
+    index.i <- as.character(row[, index])
+    partner.i <- as.character(row[, partner])
+    edge_list$distance[i] <-dist_matrix[index.i, partner.i]
+    i <- i + 1
+  }
+  
+  # Check
+  if(any(is.na(edge_list$distance))){
+    if(NA_ok == FALSE){
+      stop("distances contain NA values")
+    } else {
+      warning("distances contain NA values but were calcualted anyway")
+    }
+  }
+  
+  if(add_as_column == TRUE){
+    return(edge_list)
+  } else {
+    return(edge_list$distance)
+  }
+}
+
+# EXAMPLE
+dist.temp <- get_distance(edge_list = index_partners_edge.hiv, dist_matrix = hiv.Patristic, partner_filter = NULL, add_as_column = TRUE)
+head(dist.temp[,c("ptid", "index_ptid", "distance")]) #Here, I've added the distances as a column in the edge list, but for most analyses, it can just be extracted as a vector
+
+## Spot CHECK 8 - these should match
+dist.temp[122 ,c("ptid", "index_ptid", "distance")]
+hiv.Patristic["871974407890", "724315918038"]
+
+## CHECK 9 - this should be FALSE
+any(is.na(dist.temp$distance))
+```
+
+## FUNCTION: Calculate the percent of controls further apart in patristic distance than the true (named) pair
+```{r}
+controls_further_than_percent <- function(true_dist, control_distances, NA_ok = FALSE){
+  if(NA_ok == TRUE){
+    warning("NAs dropped from control distances")
+    control_distances <- as.vector(lapply(control_distances, na.omit))
+  }
+  
+  percent_further_than <- function(x, y){
+    y2 <- y[y != x] #don't count y = x in denominator
+    sum(x < y2)/length(y2)
+    }
+  
+  mapply(percent_further_than, x = true_dist, y = control_distances)
+}
+
+# EXAMPLE
+controls_further_than_percent(list(0.25), list(c(0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7))) #expected value = 5/7 = 0.714
+```
+
+
+## FUNCTION: Get mean distance between index and all non-named partners (fitting selection criteria)
+#### similar to get_distance() but takes an edge list, distance matrix, and pairwise list (usually a list of all the non-named partenrs for each index - one entry per index). The mean distance between the parnterns (usually non-named partners) and the index is added to the index-partners edge table, as is the difference from the true index-named-partner
+#### Note: this formula does not take a filter list, any filtering must be done when creating the non-named partner lists.
+```{r}
+get_control_dist <- function(edge_list, partners_list, dist_matrix, add_as_column = FALSE) {
+  
+  #check edge list is the same size as partners_list
+  if(nrow(edge_list) != length(partners_list)){
+    stop("edge_list and partners_list are not the same size")
+  }
+  
+
+  edge_list$control_dist <- NA
+  
+
+  for(i in 1:length(partners_list)){
+    distances <- c()
+    index <- names(partners_list)[i]
+    pairs <- partners_list[[i]]
+    for(non_named_partner in pairs){
+      distance <- dist_matrix[index, non_named_partner]
+      distances <- append(distances, distance)
+      rm(distance)
+    }
+    edge_list$control_dist[i] <- list(distances)
+  }
+  
+  # Check
+  if(any(is.na(edge_list$control_dist))){
+    if(NA_ok == FALSE){
+      stop("control distances contain NA values")
+    } else {
+      warning("distances contain NA values but were calculated anyway")
+    }
+  }
+  
+  if(!is.null(edge_list$distance)){
+    edge_list$closer_than_contols <- controls_further_than_percent(true_dist = edge_list$distance, control_distances = edge_list$control_dist)
+  }
+  
+  if(add_as_column == TRUE){
+    return(edge_list)
+  } else {
+    return(edge_list$control_dist)
+  }
+}
+
+## EXAMPLE
+dist.temp <- get_control_dist(edge_list = dist.temp, partners_list = non_named_partners, dist_matrix = hiv.Patristic, add_as_column = TRUE)
+
+head(dist.temp)
+
+## Spot CHECK 10
+dist.temp[12, c("ptid", "index_ptid", "control_dist", "region.CN")]
+dist.temp[12, ]$control_dist
+hiv.Patristic["893522170222", "115859961128"] #"115859961128" is the first control for this index - ie. should match the first distance in the vector above
+```
+
+
+
+### FUNCTION: resample partner pair for each index - for evaluation of statistical significance
+Resampled partners must match the original partner by region, sex, and partner type (ie. a partner that was only enrolled as a sexual partner is only a match for a named partner that was enrolled as a sexual or sexual and injecting partner and visa versa) 
+```{r}
+resample_partner <- function(edge_list, partners_list) {
+
+  #edge list and pairwise list should be pre-filtered - function will check that they are the same length
+  if(!identical(as.character(names(partners_list)), as.character(edge_list$index_ptid))){
+    break("pairwise list and edge_list don't match")
+  }
+  
+    resampled_edge_list <- edge_list %>%
+    mutate(ptid = NA, number_resampled_from = NA)
+    
+    for(i in 1:length(partners_list)){
+      pairs <- c(partners_list[[i]], edge_list[i, "ptid"]) #include the actual named partner
+      resampled_edge_list[i, "ptid"] <- sample(pairs, 1)
+      resampled_edge_list[i, "number_resampled_from"] <- length(pairs) #save a record of how many partners fit eligibility criteria for re sampling (if this number is too small, this won't be a meaningful test)
+    }
+    
+    #check
+    if(!identical(edge_list$index_ptid, resampled_edge_list$index_ptid)){
+      stop("indexes don't match between edge list and resampled edge list")
+    }
+
+    
+  return(resampled_edge_list)
+}
+
+## EXAMPLE
+#here's the non-resampled edge list:
+head(index_partners_edge.hiv)
+#And here's the resampled one (notice the indexes stay the same but the partner changes)
+head(resample_partner(edge_list = index_partners_edge.hiv, partners_list = non_named_partners))
+
+```  
+To do: edit code to build protections against edge_list and non-named_partners list misaligning (note: can't align by index_ptid because these are non-unique)  
+
+
+## FUNCTION: compare distances between named and non-named partners for multiple resamples
+```{r}
+get_resampled_percents <- function(edge_list, dist_matrix, partners_list, control_distances, add_as_column = FALSE, NA_ok = FALSE, print_warning = TRUE){
+  if(!is.null(control_distances) &  print_warning == TRUE){
+    warning("Control distances were pre-provided for each index and are NOT dependant on the identifty of the resampled partner. This is ok as long as control group was not defined based on any partner characteristics (ex. partner_type or times_named.)")
+  }
+
+  resampled.edge_list <- resample_partner(edge_list = edge_list,
+    partners_list = partners_list)
+  
+  # Check
+  if(!(identical(resampled.edge_list$index_ptid, edge_list$index_ptid))){
+    stop("index_ptid is not in the same order in edge_list and resampled.edge_list")
+  }
+  
+  if(print_warning == TRUE){
+    resampled_distances <- get_distance(
+      edge_list = resampled.edge_list, dist_matrix = dist_matrix, NA_ok = NA_ok)
+  } else {
+    suppressWarnings({
+      resampled_distances <- get_distance(
+        edge_list = resampled.edge_list, dist_matrix = dist_matrix, NA_ok = NA_ok)
+    })
+  }
+  
+  # Check
+  if((any(is.na(resampled_distances)) | any(is.na(unlist(control_distances)))) & NA_ok == FALSE){
+    stop("resampled_distances or control_distances contain NA values")
+  }
+
+  closer_than_controls <- controls_further_than_percent(true_dist = resampled_distances, control_distances = control_distances, NA_ok = NA_ok) #We can use the same control set for each index because the control set is the same regardless of the partner (ie. it matches the region of the index (and therefore the true named partner) and excludes named partners of that index in the subset). If we wanted to further control for characteristics of the partner, like partner_type, however, we would need to regenerate the control group for the given resampled partner.
+  
+  
+  # Check
+  if(length(closer_than_controls) != length(resampled.edge_list$index_ptid)){
+    stop("closer_than_controls is not the same length as indexes")
+  }
+  
+  resampled.edge_list$closer_than_controls <- closer_than_controls
+
+  if(add_as_column == TRUE){
+    return(resampled.edge_list)
+  } else {
+    #return(edge_list$non_named_med_dist)
+    return(resampled.edge_list$closer_than_controls)
+  }
+}
+
+#EXAMPLE
+resampled.edge.hiv <-
+  get_resampled_percents(
+    edge_list = index_partners_edge.hiv,
+    dist_matrix = hiv.Patristic,
+    partners_list = non_named_partners,
+    control_distances = dist.temp$control_dist,
+    add_as_column = TRUE
+  )
+head(resampled.edge.hiv)
+```
+
+Warning is because one resampled distance is compared against multiple non-named partner distances. This is desired behavior and I have confirmed expected results are returned
+
+
+
+## FUNCTION: Plots
+### plot_named_controls_comparison plots the percent of named pairs closer than controls
+```{r}
+plot_named_controls_comparison <- function(dist, title = NULL,
+                           color = "aquamarine3", color2 = "cadetblue",
+                           my_xlim = NULL, my_ylim = NULL,
+                           label1 = "controls", label2 = "named pairs",
+                           no_labels = FALSE, legend.position = "bottom", NA_ok = FALSE){
+
+  mean_line <- mean(dist, na.rm = NA_ok)
+
+      p <- ggplot() +
+        ggtitle(title) +
+        theme(legend.title=element_blank(), legend.position=legend.position,
+              text = element_text(size = 10)) + 
+        geom_histogram(mapping = aes(dist), bins = 40,
+                   color = "black", boundary = 0.5, fill = color) +
+      labs(x = "percent of controls closer than the named pair") +
+      geom_vline(xintercept = 0.5) +
+        geom_vline(xintercept = mean_line, color = "aquamarine3")
+      
+  if(!is.null(my_xlim)){
+    p <- p + coord_cartesian(xlim = my_xlim)
+  }
+  
+  if(!is.null(my_ylim)){
+    p <- p + coord_cartesian(ylim = my_ylim)
+  }
+  
+  if(no_labels == TRUE){
+    p <- p + labs(x = "", y = "")
+  }
+
+  return(p)
+}
+
+plot_named_controls_comparison(dist = dist.temp$closer_than_contols)
+```
+
+### plot_2_groups plots histograms of seperate groups of data
+```{r}  
+plot_2_groups <- function(dist1, dist2, title = NULL,
+                           color1 = "green3", color2 = "purple",
+                           my_xlim = NULL, my_ylim = NULL,
+                           dist1_label = "Controls", dist2_label = "named pairs",
+                           no_labels = FALSE, legend.position = "bottom"){
+  
+   vline1 <- mean(dist1)
+   vline2 <- mean(dist2)
+    
+    p <-  ggplot() +
+      ggtitle(title) +
+      theme(legend.title=element_blank(), text = element_text(size = 16)) + 
+      geom_histogram(mapping = aes(dist1, fill = color1), bins = 40,
+                    alpha = 0.5) +
+      geom_histogram(mapping = aes(dist2,  fill = color2), bins = 40,
+                   alpha = 0.5) +
+      geom_vline(xintercept = vline1, color = color1, size = 0.7) +
+      geom_vline(xintercept = vline2, color = color2, size = 0.7) +
+      scale_fill_manual(values = c(color1, color2),
+                      labels = c(dist1_label, dist2_label)) +
+      labs(x = "pairwise distance") +
+      theme(legend.position=legend.position,  legend.direction="vertical")
+
+  
+  if(!is.null(my_xlim)){
+    p <- p + coord_cartesian(xlim = my_xlim)
+  }
+  
+  if(!is.null(my_ylim)){
+    p <- p + coord_cartesian(ylim = my_ylim)
+  }
+  
+  if(no_labels == TRUE){
+    p <- p + labs(x = "", y = "")
+  }
+    
+  return(p)
+}
+
+#EXAMPLE
+plot_2_groups(dist1 = dist.temp$distance, dist2 = unlist(lapply(dist.temp$control_dist, median)))
+```
+
+
+### plot boxplot for 2 groups
+```{r}  
+plot_boxplot <- function(dist1, dist2, title = "Group", y_title = "Distance", dist1_label = "observed", dist2_label = "Controls (median)", legend.position = "bottom"){
+  
+  data <- data.frame(
+  Group = c(rep(dist1_label, length(dist1)), rep(dist2_label, length(dist2))),
+  Distance = c(dist1, dist2)
+)
+
+  # create a box plot using ggplot2
+  p <- ggplot(data, aes(x = Group, y = Distance)) +
+    geom_boxplot() +
+    labs(y = y_title, x = title) +
+    coord_flip() +
+    theme(plot.margin = unit(c(1,1,3,1), "lines"),
+          text = element_text(size = 16),
+          axis.text.x = element_text(angle = 45, hjust = 1, size =12),
+          axis.title.x = element_text(size = 14))
+
+  return(p)
+}
+
+#EXAMPLE
+plot_boxplot(dist1 = dist.temp$distance, dist2 = unlist(lapply(dist.temp$control_dist, median)))
+```
+
+
+<br><br>
+
+
+# ANALYSES
+## Get distances - for index-named partner pairs and index-non-named partner pairs
+```{r}
+#sexual
+sexual_patristic <- get_distance(edge_list = sexual_only.edge, dist_matrix = hiv.Patristic)
+sexual.controls.list <- find_control_pairs(edge_list = sexual_only.edge, metadata = data.hiv)
+sexual_patristic.controls <- get_control_dist(
+  edge_list = sexual_only.edge,
+  dist_matrix = hiv.Patristic,
+  partners_list = sexual.controls.list)
+
+
+#Injecting
+injecting_patristic <- get_distance(edge_list = injecting_only.edge,
+                                    dist_matrix = hiv.Patristic)
+injecting.controls.list <-
+  find_control_pairs(edge_list = injecting_only.edge, metadata = data.hiv)
+injecting_patristic.controls <- get_control_dist(
+  edge_list = injecting_only.edge,
+  dist_matrix = hiv.Patristic,
+  partners_list = injecting.controls.list)
+
+
+#Needle-sharing
+needle_sharing_patristic <- get_distance(edge_list = needle_sharing.edge,
+                                    dist_matrix = hiv.Patristic)
+needle_sharing.controls.list <-
+  find_control_pairs(edge_list = needle_sharing.edge, metadata = data.hiv)
+needle_sharing_patristic.controls <- get_control_dist(
+  edge_list = needle_sharing.edge,
+  dist_matrix = hiv.Patristic,
+  partners_list = needle_sharing.controls.list)
+
+
+#All
+all_patristic.edge_list <- get_distance(edge_list = index_partners_edge.hiv,
+                                        dist_matrix = hiv.Patristic,
+                                        add_as_column = TRUE)
+all_patristic <- all_patristic.edge_list$distance
+all.controls.list <- find_control_pairs(edge_list = index_partners_edge.hiv, metadata = data.hiv)
+all_patristic.controls <- get_control_dist(
+  edge_list = index_partners_edge.hiv,
+  dist_matrix = hiv.Patristic,
+  partners_list = all.controls.list)
+
+
+
+#Recency of diagnosis - note: this is testing for difference in distance between different types of named pairs (instead of between named and non-named pairs)
+recent_diagnosis_patristic <- get_distance(
+  edge_list = index_partners_edge.hiv,
+  dist_matrix = hiv.Patristic,
+  partner_filter = recent_diagnoses)
+
+not_recent_diagnosis_patristic <- get_distance(
+  edge_list = index_partners_edge.hiv,
+  dist_matrix = hiv.Patristic,
+  partner_filter = not_recent_diagnoses)
+
+#similarity of diagnosis time
+similar_diagnosis_patristic <- get_distance(
+  edge_list = index_partners_edge.hiv,
+  dist_matrix = hiv.Patristic,
+  partner_filter = similar_diagnoses_times)
+
+dissimilar_diagnosis_patristic <- get_distance(
+  edge_list = index_partners_edge.hiv,
+  dist_matrix = hiv.Patristic,partner_filter = dissimilar_diagnoses_times)
+```
+*Note: I created the warning about filters provided as row numbers. I have checked the accuracy of these already
+
+
+
+# Plots
+```{r}
+
+## Partner type vs. control partners
+pairs_dif_sexual.plot <- plot_named_controls_comparison(title = "only sexual partners",
+  dist = controls_further_than_percent(true_dist =  sexual_patristic, control_distances = sexual_patristic.controls), 
+  my_ylim = c(0,15), no_labels = TRUE)
+
+pairs_dif_injecting.plot <- plot_named_controls_comparison(title = "only injecting partners",
+  dist = controls_further_than_percent(true_dist = injecting_patristic, control_distances = injecting_patristic.controls), 
+  my_ylim = c(0,15), no_labels = TRUE)
+
+pairs_dif_all.plot <- plot_named_controls_comparison(title = "all partners",
+  dist = controls_further_than_percent(true_dist =  all_patristic, control_distances = all_patristic.controls), 
+  my_ylim = c(0,15), no_labels = TRUE)
+
+
+pairs_hist <- ggarrange(
+  pairs_dif_sexual.plot,
+  pairs_dif_injecting.plot,
+  pairs_dif_all.plot,
+  ncol = 3, nrow = 1,
+  common.legend = TRUE, legend = "bottom"
+)
+
+pairs_hist <- annotate_figure(pairs_hist,
+                              left = text_grob("count", color = "black",
+                                               rot = 90),
+                              bottom = text_grob("percent of controls further than the named pair", color = "black", vjust = 0))
+pairs_hist
+
+ggsave("./outputs/partner_dist_hist.png", pairs_hist,
+       width = 7, height = 4, dpi = 300, units = "in", )
+
+
+```
+
+#### Also save a seperate plot for all-partners
+```{r}
+pairs_dif_all.plot <- plot_named_controls_comparison(title = "all partners",
+  dist = controls_further_than_percent(true_dist =  sexual_patristic, control_distances = sexual_patristic.controls))
+
+ggsave("./outputs/all_partner_patristic_dist_hist.png", pairs_dif_all.plot)
+```
+
+
+## Plot comparisons by partner type and time since diagnosis
+```{r}
+
+# As Histograms
+
+partner_type.plot <- plot_2_groups(title = "partner type",
+  dist1 = sexual_patristic, dist2 = injecting_patristic,
+  dist1_label = "sexual partners", dist2_label = "injecting partners",
+  legend.position = "right")
+partner_type.plot
+ggsave("../results/APS/partner_type_hist.png", partner_type.plot)
+  
+
+pairs_diagnosis_recency.plot <- plot_2_groups(title = "time since diagnosis",
+  dist1 = recent_diagnosis_patristic, dist2 = not_recent_diagnosis_patristic,
+  dist1_label = "avg(time-since-diagnosis) <= 2 years", dist2_label = "avg(time-since-diagnosis) > 3 years")
+pairs_diagnosis_recency.plot 
+ggsave("../results/APS/pairs_diagnosis_recency_hist.png", pairs_diagnosis_recency.plot)
+
+
+pairs_dif_diagnosis_time.plot <- plot_2_groups(title = "difference in diagnosis times",
+  dist1 = similar_diagnosis_patristic, dist2 = dissimilar_diagnosis_patristic,
+  dist1_label = "diagnosed within 2 years\nof named partner", dist2_label = "diagnosed > 3 years before\nor after named partner")
+pairs_dif_diagnosis_time.plot
+ggsave("../results/APS/pairs_dif_diagnosis_time_hist.png", pairs_dif_diagnosis_time.plot)
+
+
+# Also save a combined plot for the diagnosis recency
+pairs_hist.time <- ggarrange(
+  pairs_diagnosis_recency.plot,
+  pairs_dif_diagnosis_time.plot,
+  ncol = 2, nrow = 1
+)
+
+ggsave("./outputs/partner_dist_hist.time.png", pairs_hist.time,
+       width = 9, height = 4, dpi = 300, units = "in", )
+
+
+
+# As Boxplots
+
+partner_type.boxplot <- plot_boxplot(title = "partner type\n",
+  dist1 = sexual_patristic, dist2 = injecting_patristic,
+  dist1_label = "sexual\npartners", dist2_label = "injecting\npartners")
+ggsave("./outputs/partner_type_boxplot.png", partner_type.boxplot)
+
+
+pairs_diagnosis_recency.boxplot <- plot_boxplot(title = "time since diagnosis",
+  dist1 = recent_diagnosis_patristic, dist2 = not_recent_diagnosis_patristic,
+  dist1_label = "avg(time-\nsince-diagnosis)\n<= 2 years", dist2_label = "avg(time-\nsince-diagnosis)\n> 3 years")
+ggsave("./outputs/pairs_diagnosis_recency_boxplot.png", pairs_diagnosis_recency.boxplot)
+
+pairs_dif_diagnosis_time.boxplot <- plot_boxplot(title = "difference in\ndiagnosis times",
+  dist1 = similar_diagnosis_patristic, dist2 = dissimilar_diagnosis_patristic,
+  dist1_label = "diagnosed\nwithin 2 years\nof named partner", dist2_label = "diagnosed\n> 3 years before\nor after named partner")
+ggsave("./outputs/pairs_dif_diagnosis_time_boxplot.png", pairs_dif_diagnosis_time.boxplot)
+
+
+# Also save a combined plot for the diagnosis recency
+pairs_boxplot.time <- ggarrange(
+  pairs_diagnosis_recency.boxplot,
+  pairs_dif_diagnosis_time.boxplot,
+  ncol = 2, nrow = 1
+)
+
+ggsave("./outputs/partner_dist_boxplot.time.png", pairs_boxplot.time,
+       width = 14, height = 4, dpi = 300, units = "in", )
+
+
+```
+
+### Get avg. % of named pairs closer than non-named pairs for resamples - ie. the null distribution
+#### Note: the mean should be ~0.50, although it may differ for small datasets
+```{r}
+sexual_only.resampled.closer_than_controls <-
+  replicate(n_resamples, get_resampled_percents(
+    edge_list = sexual_only.edge,
+    dist_matrix = hiv.Patristic,
+    partners_list = sexual.controls.list,
+    control_distances = sexual_patristic.controls,
+    print_warning = FALSE))
+mean(sexual_only.resampled.closer_than_controls) #check mean - should be ~ 0.5 (meaning resampled index-partner pairs were, on average, closer than and further than half of the controls)
+
+injecting_only.resampled.closer_than_controls  <-
+  replicate(n_resamples,
+    get_resampled_percents(
+      edge_list = injecting_only.edge,
+      dist_matrix = hiv.Patristic,
+      partners_list = injecting.controls.list,
+      control_distances = injecting_patristic.controls,
+      print_warning = FALSE))
+mean(injecting_only.resampled.closer_than_controls) #check mean
+
+
+needle_sharing.resampled.closer_than_controls  <-
+  replicate(n_resamples,
+    get_resampled_percents(
+      edge_list = needle_sharing.edge,
+      dist_matrix = hiv.Patristic,
+      partners_list = needle_sharing.controls.list,
+      control_distances = needle_sharing_patristic.controls,
+      print_warning = FALSE))
+mean(needle_sharing.resampled.closer_than_controls) #check mean
+
+all.resampled.closer_than_controls  <-
+  replicate(n_resamples,
+    get_resampled_percents(
+      edge_list = index_partners_edge.hiv,
+      dist_matrix = hiv.Patristic,
+      partners_list = all.controls.list,
+      control_distances = all_patristic.controls,
+      print_warning = FALSE))
+mean(all.resampled.closer_than_controls) #check mean
+```
+
+
+## FUNCTION: Summarize data
+```{r}
+summary_by_distance_thresh <- function(control_pairs.dist_list, named_pairs.dist_vec, resampled.closer_than_controls, threshold_vec, NA_ok = FALSE){
+  N_rows <- length(threshold_vec)
+  
+  pairs_below_distance_threshold.df <- data.frame(
+    "distance_threshold" = rep(NA, N_rows),
+     "named_pairs" = rep(NA, N_rows),
+     "controls" = rep(NA, N_rows))
+  
+  for(i in 1:length(threshold_vec)) {
+    threshold <- threshold_vec[i]
+    pairs_below_distance_threshold.df$"distance_threshold"[i] <- threshold
+    
+    number_named_below <- sum(named_pairs.dist_vec < threshold, na.rm = NA_ok)
+    percent_named_below <- round(100 * mean(named_pairs.dist_vec < threshold, na.rm = NA_ok), 1)
+    pairs_below_distance_threshold.df$"named_pairs"[i] <-
+      paste0(number_named_below, " (", percent_named_below, "%)")
+    
+    number_controls_below <- sum(unlist(control_pairs.dist_list) < threshold, na.rm = NA_ok)
+    percent_controls_below <- round(100 * mean(unlist(control_pairs.dist_list) < threshold, na.rm = NA_ok), 1)
+    pairs_below_distance_threshold.df$"controls"[i] <-
+      paste0(number_controls_below, " (", percent_controls_below, "%)")
+  }
+  
+  #Calculate percent of index-partner pairs with dist < non named-pairs
+  closer_than_control <- mean(controls_further_than_percent(true_dist = named_pairs.dist_vec, control_distances = control_pairs.dist_list, NA_ok = NA_ok), na.rm = NA_ok) #Get total % controls_further than index-partner for each index, then average accross indexes
+  
+  #Get non-parametric P-value (this is the percent of resamplings that had as or more extreme values (ie. more index-partner pairs that are closer than the controls) compared to the true data), averages across all index-partner pairs
+  closer_than_controls.null_distribution <- apply(resampled.closer_than_controls, 2, mean, na.rm = NA_ok) #column mean = avg across indexes, resulting in one mean from each resample
+  non_parametric.p <- 2*min(sum(closer_than_controls.null_distribution > closer_than_control,
+                                na.rm = NA_ok),
+                          sum(closer_than_controls.null_distribution < closer_than_control,
+                              na.rm = NA_ok))/
+    sum(closer_than_controls.null_distribution != closer_than_control, na.rm = NA_ok) #percent of resamples with more Avg(% controls closer than partners) than in actual data. (Note: the denominator will almost always equal the total number of resamples, except in the very unlikely case that the null_distribtuion mean exactly equalrs the observed closer_than_controls value)
+
+  #add rows for totals and statistical test results
+  pairs_below_distance_threshold.df <- rbind(pairs_below_distance_threshold.df,
+                                             data.frame(
+                                               "distance_threshold" = c("total", "mean distance", "Avg (% controls further than named pair)*", "P-value**"),
+                                               "named_pairs" = c(length(na.omit(named_pairs.dist_vec)),  round(mean(named_pairs.dist_vec, na.rm = NA_ok), 3), round(closer_than_control,3), signif(non_parametric.p,3)),
+                                               "controls" = c(length(na.omit(unlist(control_pairs.dist_list))), round(mean(unlist(control_pairs.dist_list), na.rm = NA_ok), 3), "-", "-")))
+  
+  return(pairs_below_distance_threshold.df)
+}
+```
+
+To do: For control group, use all pairwise comparisons, not just the means for these comparisons
+
+## Patristic distance summary tables
+## APS pairs summary table
+```{r}
+pairs_below_distance_threshold.list <- list(
+  summary_by_distance_thresh(
+    control_pairs.dist_list = sexual_patristic.controls,
+    named_pairs.dist_vec = sexual_patristic,
+    resampled.closer_than_controls = sexual_only.resampled.closer_than_controls,
+    threshold_vec = c(0.015, 0.045, 0.10, 0.15)),
+  summary_by_distance_thresh(
+    control_pairs.dist_list = injecting_patristic.controls,
+    named_pairs.dist_vec = injecting_patristic,
+    resampled.closer_than_controls = injecting_only.resampled.closer_than_controls,
+    threshold_vec = c(0.015, 0.045, 0.10, 0.15))[,-1],
+  summary_by_distance_thresh(
+    control_pairs.dist_list = needle_sharing_patristic.controls,
+    named_pairs.dist_vec = needle_sharing_patristic,
+    resampled.closer_than_controls = needle_sharing.resampled.closer_than_controls,
+    threshold_vec = c(0.015, 0.045, 0.10, 0.15))[,-1],
+  summary_by_distance_thresh(control_pairs.dist_list = all_patristic.controls,
+    named_pairs.dist_vec = all_patristic,
+    resampled.closer_than_controls = all.resampled.closer_than_controls,
+    threshold_vec = c(0.015, 0.045, 0.10, 0.15))[,-1])
+
+pairs_below_distance_threshold.df <- bind_cols(pairs_below_distance_threshold.list)
+
+summary.kable <- kable(pairs_below_distance_threshold.df, "html") %>%
+  kable_styling("striped") %>%
+  add_header_above(c(" ", "sexual" = 2, "injecting" = 2, "shared needles" = 2, "all partners" = 2)) %>%
+ scroll_box(width = "1000px") %>%
+  footnote("Rows 1-6 indicate the # (%) of partner pairs with pairwise distances < the threshold
+  *percent of index-control pairs with patristic distance > the named index-partner pair, averaged across all pairs. Percents >50% indicate that indexes are more similar, on average to their named partner than to other individuals from the same region.
+  **Under the resampled distribution, the partner of each index is randomly resampled from the control group. The P-value is the percent of resamplings in which the test statistic (Avg(% controls further than named pairs)) is greater than for the observed data")
+
+summary.kable
+
+save_kable(summary.kable, "./outputs/summary_table.html")
+```
+
+
+
+
+# Cluster analysis - Single linkage (NOT USING)
+```{r}
+cluster_by_distance.single_linkage <- function(dist_matrix = NULL, tree = NULL, threshold = 0.045, min_size = 2, dist_hist = FALSE) {
+  #min size = minimum number of samples in a cluster
+  #threshold = the patristic distance cutoff for a cluster (the max distance between any pairs in the cluster)
+  
+  #if tree is provided, extract a distance matrix
+  if(!is.null(tree)){
+    if(!is.null(dist_matrix)){stop("tree and distance matrix were both provided. Only one should be provided")}
+    dist_matrix <- ape::cophenetic.phylo(tree)
+  }
+    adj_mat <- dist_matrix <= threshold
+    cluster_graph <- igraph::graph_from_adjacency_matrix(adj_mat, mode="undirected", diag=FALSE)
+    components <- igraph::components(cluster_graph)
+    retain_assignments <- purrr::keep(components$membership, ~ components$csize[.x] >= min_size)
+    clusters <- tibble(ptid = names(retain_assignments), cluster = retain_assignments)
+    
+    clusters_summary <- clusters %>% group_by(cluster) %>%
+      summarize(ptids = paste0(ptid, collapse = " ; "), cluster_size = n())
+
+  #Optional, print a histogram of all clsuter distances   
+  if(dist_hist == TRUE){
+    distances <- c()
+    for(i in 1:nrow(clusters_summary)){
+      ptids <- unlist(str_split(clusters_summary[i, "ptids"], " ; "))
+      for(j in 1:length(ptids)-1){
+        ptid1 <- ptids[j]
+        ptid2 <- ptids[j+1]
+        distances <- append(distances, dist_matrix[ptid1, ptid2])
+      }
+    }
+    hist(distances, breaks = 10)
+  }
+    
+    return(clusters_summary)
+}
+
+
+clust.hiv.045 <- cluster_by_distance.single_linkage (dist_matrix = hiv.Patristic)
+clust.hiv.015 <- cluster_by_distance.single_linkage (dist_matrix = hiv.Patristic, threshold = 0.015)
+
+#Get summary of cluster sizes
+nrow(clust.hiv.045)
+summary(clust.hiv.045$cluster_size)
+
+nrow(clust.hiv.015)
+summary(clust.hiv.015$cluster_size)
+
+
+# Check if there are any named pairs within the distance threshold?
+## 0.045 threshold
+clust.hiv.045.ptids <- str_split(clust.hiv.045$ptids, pattern = " ; ") 
+index_partners_edge.045 <- all_patristic.edge_list[0L,]
+
+#Double for-loop! Can make more efficient if necissary
+for(i in 1:nrow(all_patristic.edge_list)){
+  #Extract partner and index ptids
+  ptid <- all_patristic.edge_list[i, "ptid", drop = TRUE]
+  index_ptid <- all_patristic.edge_list[i, "index_ptid", drop = TRUE]
+  for(j in clust.hiv.045.ptids){
+    if(ptid %in% j & index_ptid %in% j){ #if both partner and index are in the cluster...
+    index_partners_edge.045 <- rbind(index_partners_edge.045, index_partners_edge.hiv[i,]) #save that row of the edgelist (this way I can check other info about the index-partner pair)
+    }
+  }
+}
+
+#Look at the partners represented - be sure to check for duplicates (where index named partner and partner named index)
+index_partners_edge.045
+
+
+## 0.015 threshold
+clust.hiv.015.ptids <- str_split(clust.hiv.015$ptids, pattern = " ; ") 
+index_partners_edge.015 <- all_patristic.edge_list[0L,]
+
+#Double for-loop! Can make more efficient if necissary
+for(i in 1:nrow(all_patristic.edge_list)){
+  #Extract partner and index ptids
+  ptid <- all_patristic.edge_list[i, "ptid", drop = TRUE]
+  index_ptid <- all_patristic.edge_list[i, "index_ptid", drop = TRUE]
+  for(j in clust.hiv.015.ptids){
+    if(ptid %in% j & index_ptid %in% j){ #if both partner and index are in the cluster...
+    index_partners_edge.015 <- rbind(index_partners_edge.015, index_partners_edge.hiv[i,]) #save that row of the edgelist (this way I can check other info about the index-partner pair)
+    }
+  }
+}
+
+#Look at the partners represented - be sure to check for duplicates (where index named partner and partner named index)
+index_partners_edge.015
+
+
+#Drop cluster summaries (which I'm not using) to avoid errors
+rm(clust.hiv.045, clust.hiv.015)
+```
+
+
+
+# Cluster analysis - Maximum distance
+```{r}
+cluster_by_distance.complete_linkage  <- function(dist_matrix, threshold = 0.045){
+  hc <- hclust(as.dist(dist_matrix), method = "complete")
+  clusters <- cutree(hc, h = threshold)
+  Clusters <- tibble(ptid = names(clusters), cluster = as.integer(clusters))
+  
+  clusters_summary <- Clusters %>% group_by(cluster) %>%
+    summarize(ptids = paste0(ptid, collapse = " ; "), cluster_size = n()) %>%
+    filter(cluster_size > 1)
+  
+  if(any(duplicated(unlist(str_split(clusters_summary$ptids, pattern = " ; "))))){
+    warning("Some ptids fall into multiple clusters")
+  }
+  
+  return(clusters_summary)
+}
+
+clust2.hiv.045 <- cluster_by_distance.complete_linkage(dist_matrix = hiv.Patristic)
+clust2.hiv.015 <- cluster_by_distance.complete_linkage(dist_matrix = hiv.Patristic, threshold = 0.015)
+
+#Get summary of cluster sizes
+nrow(clust2.hiv.045)
+summary(clust2.hiv.045$cluster_size)
+
+nrow(clust2.hiv.015)
+summary(clust2.hiv.015$cluster_size)
+
+
+
+
+# Check if there are any named pairs within the distance threshold?
+## 0.045 threshold
+clust2.hiv.045.ptids <- str_split(clust2.hiv.045$ptids, pattern = " ; ")
+index_partners_edge.045.2 <- all_patristic.edge_list[0L,]
+
+#Double for-loop! Can make more efficient if necessary
+for(i in 1:nrow(all_patristic.edge_list)){
+  #Extract partner and index ptids
+  ptid <- all_patristic.edge_list[i, "ptid", drop = TRUE]
+  index_ptid <- all_patristic.edge_list[i, "index_ptid", drop = TRUE]
+  for(j in 1:length(clust2.hiv.045.ptids)){
+    clust <- clust2.hiv.045.ptids[[j]]
+    if(ptid %in% clust & index_ptid %in% clust){ #if both partner and index are in the cluster...
+    index_partners_edge.045.2 <- rbind(index_partners_edge.045.2, index_partners_edge.hiv[i,]) #save that row of the edgelist (this way I can check other info about the index-partner pair)
+    }
+  }
+}
+
+#Look at the partners represented
+index_partners_edge.045.2
+#Check for reverse duplicates (where index named partner and partner named index)
+reverse_combinations <- index_partners_edge.045.2 %>%
+  semi_join(index_partners_edge.045.2, by = c("ptid" = "index_ptid", "index_ptid" = "ptid"))
+
+
+## 0.015 threshold
+clust2.hiv.015.ptids <- str_split(clust2.hiv.015$ptids, pattern = " ; ") 
+index_partners_edge.015.2 <- all_patristic.edge_list[0L,]
+
+#Double for-loop! Can make more efficient if necessary
+for(i in 1:nrow(all_patristic.edge_list)){
+  #Extract partner and index ptids
+  ptid <- all_patristic.edge_list[i, "ptid", drop = TRUE]
+  index_ptid <- all_patristic.edge_list[i, "index_ptid", drop = TRUE]
+  for(j in 1:length(clust2.hiv.015.ptids)){
+    clust <- clust2.hiv.015.ptids[[j]]
+    if(ptid %in% clust & index_ptid %in% clust){ #if both partner and index are in the cluster...
+    index_partners_edge.015.2  <- rbind(index_partners_edge.015.2, index_partners_edge.hiv[i,]) #save that row of the edgelist (this way I can check other info about the index-partner pair)
+    }
+  }
+}
+
+#Look at the partners represented - be sure to check for duplicates (where index named partner and partner named index)
+index_partners_edge.015.2
+#Check for reverse duplicates (where index named partner and partner named index)
+reverse_combinations <- index_partners_edge.015.2 %>%
+  semi_join(index_partners_edge.015.2, by = c("ptid" = "index_ptid", "index_ptid" = "ptid"))
+
+
+```
+
+
+<br><br><br>
+
+# Comparisons by partner-type and time-since diangosis
+
+## Partner type
+### Regression models  
+Are characteristics of partner pairs associated with patristic distance, controlign for region
+```{r}
+patristic_regression <- function(edge_list, traits, distance = "distance", control = "region.CN", threshold){
+  #traits is a character vector of covaraites in the dataframe edge_list 
+  #distance is a character vector of the name of the column in edge_list containing the measure of distance
+
+  #get a binary distance measure
+  edge_list$distance.bi <- ifelse(edge_list[,distance] < threshold, 1, 0)
+  print(table(edge_list$distance.bi))
+  
+  regression.df <- data.frame()
+  
+  for(variable in traits){
+    print(variable)
+    formula <- as.formula(paste0("distance.bi ~ ", variable, " + ", control))
+    variable2 <- edge_list[,variable, drop = TRUE]
+    distance.glm <- glm(formula, data = edge_list, family = "binomial")
+    OR <- exp(coef(distance.glm)[2:length(coef(distance.glm))])
+    CI_2.5 <- exp(confint(distance.glm)[,1][2:length(coef(distance.glm))])
+    CI_97.5 <- exp(confint(distance.glm)[,2][2:length(coef(distance.glm))])
+    signif <- ifelse((CI_2.5 > 1 & CI_97.5 > 1) | (CI_2.5 < 1 & CI_97.5 < 1), "*", "")
+    effect <- paste0(round(OR,2), " (95% CI: ", round(CI_2.5, 2), "-", round(CI_97.5,2), ")", signif)
+    effect <- effect[-length(effect)] #exclude the value corresponding to region
+    
+    if(is.factor(variable2)){
+      total <- sum(!is.na(variable2))
+      count <- table(variable2)
+      percent <- paste0(round(100*count/total, 1), "%")
+      proportion <- paste0(count, "/", total, " = ", percent)
+      
+      count_low_patristic_distance <- table(edge_list[,variable, drop = TRUE], edge_list$distance.bi)[,2]
+      count_high_patristic_distance <- table(edge_list[,variable, drop = TRUE], edge_list$distance.bi)[,1]
+      odds_low_patristic_distance <- round(count_low_patristic_distance/count_high_patristic_distance, 2)
+      odds <- paste0(count_low_patristic_distance, "/", count_high_patristic_distance, " = ", odds_low_patristic_distance)
+      
+      regression.row <- data.frame(variable = c(label(variable2), rep("", length(levels(variable2))-1)),
+                                   values = levels(variable2),
+                                   mean_or_proportion = proportion,
+                                   odds_of_low_patristic_distance = odds,
+                                   OR = rep("-", length(levels(variable2))))
+      effect <- append("Ref", effect)
+      
+    } else {
+      mean <- round(mean(variable2, na.rm = TRUE), 2)
+      
+      regression.row <- data.frame(variable = label(variable2),
+                                   values = "-",
+                                   mean_or_proportion = mean,
+                                   odds_of_low_patristic_distance = "-",
+                                   OR = "-")
+    }
+    
+    regression.row$OR <- effect
+    regression.df <- rbind(regression.df, regression.row)
+  }
+  
+  return(regression.df)
+
+}
+
+
+# Example
+
+partner_characteristics <- c("partner_type_sexual_or_injecting_only", "avg_time_since_diagnosis", "pair_shareneedles", "pair_shareneedles_eachother", "pair_rcdmoneysex", "years_seperating_HIV_diagnosis", "pair_prior_pos.cat", "pair_arv.cat", "pair_hiv_vl.cat", "pair_HIV_subtype")
+
+
+for(i in c(0.015, 0.045, 0.10)){
+  patristic_regression.hiv <- patristic_regression(
+    edge_list = all_patristic.edge_list,
+    traits = partner_characteristics,
+    threshold = i)
+  
+  write.csv(patristic_regression.hiv, paste0("./outputs/pairs_regression_dist", i, ".csv"))
+}
+
+#print the last regression (threshold = 0.10)
+patristic_regression.hiv
+
+
+
+
+# Test for possibility of confounding (partner type)
+##Is partner type associated with time-since infections?
+partner_typeXdiagnosis_time <- glm(partner_type_sexual_or_injecting_only ~ avg_time_since_diagnosis, data = all_patristic.edge_list, family = "binomial")
+exp(coef(summary(partner_typeXdiagnosis_time)))
+exp(confint(partner_typeXdiagnosis_time))
+
+##Is partner type associated with difference in diagnosis times?
+partner_typeXdif_diagnosis_time <- glm(partner_type_sexual_or_injecting_only ~ years_seperating_HIV_diagnosis, data = all_patristic.edge_list, family = "binomial")
+exp(coef(summary(partner_typeXdif_diagnosis_time)))
+exp(confint(partner_typeXdif_diagnosis_time))
+
+
+
+# Test for possibility of confounding (sharing needles or equipment)
+##Is partner type associated with time-since infections?
+share_needlesXdiagnosis_time <- glm(pair_shareneedles_eachother ~ avg_time_since_diagnosis, data = all_patristic.edge_list, family = "binomial")
+exp(coef(summary(share_needlesXdiagnosis_time)))
+exp(confint(share_needlesXdiagnosis_time))
+
+##Is partner type associated with difference in diagnosis times?
+share_needlesXdif_diagnosis_time <- glm(pair_shareneedles_eachother ~ years_seperating_HIV_diagnosis, data = all_patristic.edge_list, family = "binomial")
+exp(coef(summary(share_needlesXdif_diagnosis_time)))
+exp(confint(share_needlesXdif_diagnosis_time))
+```
+
+
+Note: this could also be evaluated using the full edge list (not just among partner pairs), however, here I have chosen to focus only on actual partner pairs.  
+
+
+### Other
+```{r}
+#Get number of times each partner was enrolled
+index_partners_edge %>%
+  filter(hiv_status_final.F == "Positive") %>%
+  group_by(ptid) %>%
+  summarise(times_enrolled = n()) %>%
+  summarise(summary_result = summary(times_enrolled), standard_deviation = sd(times_enrolled))
+
+
+#Get number of times each partner was enrolled in this analysis
+index_partners_edge.hiv %>%
+  group_by(ptid) %>%
+  summarise(times_enrolled = n()) %>%
+  summarise(summary_result = summary(times_enrolled), standard_deviation = sd(times_enrolled))
+```
+
+
+
+
+
+<br><br><br>
+
+
+
+# Tree visualization - progression  
+Note: #1-#4 are a progression of tree building for illustrative purposes. Skip to #5 for the complete tree
+```{r, fig.height=15, fig.width=10}
+#Add partner-type for THIS analysis to meta tree
+tree.SHARP_hiv.meta <- left_join(tree.SHARP_hiv.meta, data.hiv_with_partner_pairs[,c("ptid", "index_or_partner.2.F", "partner_type.2.F")], by = c("label" = "ptid"))
+#Note: "index_or_partner.2.F" is the same varaible as index_or_partner.F, but is limited to this analyses 
+
+#1. Unlabeled tree
+APS_tree1 <- ggtree(tree.SHARP_hiv) %>%
+  ggtree::rotate(476) %>% ggtree::rotate(477) + 
+  ggtitle("Empty tree")
+APS_tree1
+
+ggsave(APS_tree1, file = "./outputs/APS_tree1.png", width = 8, height = 10.5, units = "in")
+
+
+#2. Indexes
+#add column for Index or NA
+tree.SHARP_hiv.meta$index.2.F <- ifelse(
+  tree.SHARP_hiv.meta$index_or_partner.2.F == "index" |
+    tree.SHARP_hiv.meta$index_or_partner.2.F == "index_and_partner", "index", NA)
+
+APS_tree2 <- ggtree(tree.SHARP_hiv) %>%
+  ggtree::rotate(476) %>% ggtree::rotate(477) %<+% tree.SHARP_hiv.meta +
+  #geom_tiplab() + 
+  geom_tippoint(aes(shape = index.2.F)) + 
+  labs(shape = "index") +
+  ggtitle("Indexes")
+APS_tree2 
+
+ggsave(APS_tree2, file = "./outputs/APS_tree2.png", width = 8, height = 10.5, units = "in")
+
+#3. Partners
+#add column for Partner or NA
+tree.SHARP_hiv.meta$partner.2.F <- ifelse(
+  tree.SHARP_hiv.meta$index_or_partner.2.F == "partner" |
+    tree.SHARP_hiv.meta$index_or_partner.2.F == "index_and_partner", "partner", NA)
+
+# CHECK 11
+table(index_or_partner.F = tree.SHARP_hiv.meta$index_or_partner.F, index_or_partner.2.F = tree.SHARP_hiv.meta$index_or_partner.2.F, useNA = "ifany") #There are fewer index_and_partner for the .2 variable, because that is limited to THIS dataset
+table(index.2.F = tree.SHARP_hiv.meta$index.2.F, index_or_partner.2.F = tree.SHARP_hiv.meta$index_or_partner.2.F, useNA = "ifany")
+table(partner.2.F = tree.SHARP_hiv.meta$partner.2.F, index_or_partner.2.F = tree.SHARP_hiv.meta$index_or_partner.2.F, useNA = "ifany")
+
+
+APS_tree3 <- ggtree(tree.SHARP_hiv) %>%
+  ggtree::rotate(476) %>% ggtree::rotate(477) %<+% tree.SHARP_hiv.meta +
+  #geom_tiplab() + 
+  geom_tippoint(aes(shape = partner.2.F)) + 
+  labs(shape = "partner") +
+  scale_shape_manual(values = c(15))
+  ggtitle("Partners")
+APS_tree3
+
+ggsave(APS_tree3, file = "./outputs/APS_tree3.png", width = 8, height = 10.5, units = "in")
+    
+#4. Tree with named-pair connections
+partners <- as.character(index_partners_edge.hiv[, "ptid", drop = TRUE])
+indexes <- as.character(index_partners_edge.hiv[, "index_ptid", drop = TRUE])
+
+APS_tree4 <- ggtree(tree.SHARP_hiv) %>%
+  ggtree::rotate(476) %>% ggtree::rotate(477) %<+%
+  tree.SHARP_hiv.meta +
+  #geom_tiplab() + 
+  geom_tippoint(aes(shape = index_or_partner.2.F)) + 
+  labs(shape = "enrollment") +
+  geom_taxalink(taxa1 = partners, taxa2 = indexes, alpha = 0.25) +
+  ggtitle("Named pair connections")
+APS_tree4
+
+ggsave(APS_tree4, file = "./outputs/APS_tree4.png", width = 8, height = 10.5, units = "in")
+
+#5. Tree with named-pair connections
+injecting_partners <- as.character(index_partners_edge.hiv[index_partners_edge.hiv$partner_type == "Injecting", "ptid", drop = TRUE])
+injecting_indexes <- as.character(index_partners_edge.hiv[index_partners_edge.hiv$partner_type == "Injecting", "index_ptid", drop = TRUE])
+sexual_and_injecting_partners <- as.character(index_partners_edge.hiv[index_partners_edge.hiv$partner_type == "Both sexual&injecting", "ptid", drop = TRUE])
+sexual_and_injecting_indexes <- as.character(index_partners_edge.hiv[index_partners_edge.hiv$partner_type == "Both sexual&injecting", "index_ptid", drop = TRUE])
+sexual_partners <- as.character(index_partners_edge.hiv[index_partners_edge.hiv$partner_type == "Sexual", "ptid", drop = TRUE])
+sexual_indexes <- as.character(index_partners_edge.hiv[index_partners_edge.hiv$partner_type == "Sexual", "index_ptid", drop = TRUE])
+
+#check these are the same:
+table(tree.SHARP_hiv.meta[!is.na(tree.SHARP_hiv.meta$label),]$partner_type.2.F, useNA = "ifany")
+table(data.hiv_with_partner_pairs$partner_type.2.F)
+
+partner_pairsXparter_typeXenrollment_type.SHARP_hiv.tree <- ggtree(tree.SHARP_hiv) %>% ggtree::rotate(476) %>% ggtree::rotate(477) %<+%
+  tree.SHARP_hiv.meta +
+  geom_tippoint(aes(shape = index_or_partner.2.F, colour = partner_type.2.F)) + #Note: to check subtype labels for tree, replace share and color with subtype identifiers
+  labs(colour = "partner type", shape = "enrollment") +
+  #add connections between named pairs, colored by type of partner
+  #taxalink: taxa1 = partners, taxa2= indexes - add separate taxa for each partner type
+  geom_taxalink(taxa1 = injecting_partners,
+                taxa2 = injecting_indexes,
+                alpha = 0.75, colour = "#F8766D",
+                arrow=arrow(length=unit(0.02, "npc"), ends="first"),
+                mapping = aes()) +
+  geom_taxalink(taxa1 = sexual_and_injecting_partners,
+                taxa2 = sexual_and_injecting_indexes,
+                alpha = 0.75, colour = "#619CFF",
+                arrow=arrow(length=unit(0.02, "npc"), ends="first")) +
+  geom_taxalink(taxa1 = sexual_partners,
+                taxa2 = sexual_indexes,
+                alpha = 0.75, colour = "#00BA38",
+                arrow=arrow(length=unit(0.02, "npc"), ends="first")) +
+    ggtitle("Indexes vs partner enrollments") +
+  theme(plot.margin = unit(c(14,8,14,8), "mm")) +
+  geom_treescale()
+partner_pairsXparter_typeXenrollment_type.SHARP_hiv.tree
+
+ggsave(partner_pairsXparter_typeXenrollment_type.SHARP_hiv.tree, file = "./outputs/APS_named_pairs.SHARP_hiv.png", width = 8, height = 10.5, units = "in") #To visualize more closely, set a very tall height (30)
+
+#Confirm all missing rows are for samples not included in analysis
+table(tree.SHARP_hiv.meta[!is.na(tree.SHARP_hiv.meta$label),]$index_or_partner.2.F, useNA = "ifany") #NA values should match number of missing rows: 153 (10/25/22)
+```
+
+
+The warning about removing rows is because not all sequences are included in the analysis and, therefore, don't have a (index or partner) shape - this is ok. However, exactly 152 "rows" should be removed from tree 5   
+
+
+
+## Tree including previously published sequences
+Not using - the variable names have not been added to the SHARP and published metadata and I won't be using this figure in the paper, so not goign to add them
+```{r, fig.height=30, fig.width=10, eval = FALSE}
+#Add the pairs link data to the metadata that includes the published sequences
+
+#6. Tree with named-pair connections
+partner_pairsXparter_typeXenrollment_type.hiv.tree <- ggtree(tree.hiv) %<+% tree.hiv.meta +
+  #geom_tiplab() + 
+  geom_tippoint(aes(shape = index_or_partner.2.F, colour = partner_type.2.F)) + 
+  labs(colour = "partner type", shape = "enrollment") +
+  #add connections between named pairs, colored by type of partner
+  geom_taxalink(taxa1 = as.character(index_partners_edge.hiv[index_partners_edge.hiv$partner_type == "Injecting", "ptid", drop = TRUE]),
+                taxa2 = as.character(index_partners_edge.hiv[index_partners_edge.hiv$partner_type == "Injecting", "index_ptid", drop = TRUE]),
+                alpha = 0.75, colour = "#F8766D",
+                arrow=arrow(length=unit(0.02, "npc"), ends="first")) +
+  geom_taxalink(taxa1 = as.character(index_partners_edge.hiv[index_partners_edge.hiv$partner_type == "Sexual&Injecting", "ptid", drop = TRUE]),
+                taxa2 = as.character(index_partners_edge.hiv[index_partners_edge.hiv$partner_type == "Sexual&Injecting", "index_ptid", drop = TRUE]),
+                alpha = 0.75, colour = "#619CFF",
+                arrow=arrow(length=unit(0.02, "npc"), ends="first")) +
+  geom_taxalink(taxa1 = as.character(index_partners_edge.hiv[index_partners_edge.hiv$partner_type == "Sexual", "ptid", drop = TRUE]),
+                taxa2 = as.character(index_partners_edge.hiv[index_partners_edge.hiv$partner_type == "Sexual", "index_ptid", drop = TRUE]),
+                alpha = 0.75, colour = "#00BA38",
+                arrow=arrow(length=unit(0.02, "npc"), ends="first")) +
+    ggtitle("Indexes vs partner enrolements")
+partner_pairsXparter_typeXenrollment_type.hiv.tree
+
+ggsave(partner_pairsXparter_typeXenrollment_type.hiv.tree, file = "./outputs/APS_named_pairs.hiv.png", width = 8, height = 10.5, units = "in")
+
+```
+*Note: the warning about missing values is just because not everyone has a partner type, so they don't have colored tip points on the index-only or partner-only pots - check this*  
+*To do: widen figure boundaries*
+
+
+
+
+
+
+# HCV analysis 
+# Read in and format data
+```{r}
+
+
+#Number overlapping residues (because not all sequences overlap, I will read in the counts of overlapping bases - adding number shared and number differing) and drop any pairwise comparisons that involve fewer than 300 bases
+##1a
+hcv_1a.dif <- read_dist_matrix("./inputs/HCV_1a_numb_dif.csv")
+hcv_1a.shared <- read_dist_matrix("./inputs/HCV_1a_numb_shared.csv")
+hcv_1a.base_overlap <- hcv_1a.dif + hcv_1a.shared #combine # differences and #shared to get total number of bases in common
+hcv_1a.drop_pairs <- ifelse(hcv_1a.base_overlap < 300, 0, 1) #For any pairwise comparison with <300 based in common, indicate it should be dropped (0)
+
+  
+##4a
+hcv_4a.dif <- read_dist_matrix("./inputs/HCV_4a_numb_dif.csv")
+hcv_4a.shared <- read_dist_matrix("./inputs/HCV_4a_numb_shared.csv")
+hcv_4a.base_overlap <- hcv_4a.dif + hcv_4a.shared 
+hcv_4a.drop_pairs <- ifelse(hcv_4a.base_overlap < 300, 0, 1)
+  
+
+
+##
+
+
+# distances
+##1a
+hcv_1a.fasta <- read.FASTA("./inputs/HCV_alignment_V3_1a_V5_67.fasta")
+
+hcv_1a.distance <- dist.dna(hcv_1a.fasta , model = "TN93", as.matrix = TRUE, pairwise.deletion = TRUE)
+rownames(hcv_1a.distance) <- gsub("\\|.*", "", rownames(hcv_1a.distance)) %>%
+  gsub("_PRRT", "", .) %>% gsub("_.*_.*", "", .) %>% gsub("^X", "", .) #fix row and column names
+colnames(hcv_1a.distance) <- gsub("\\|.*", "", colnames(hcv_1a.distance)) %>%
+  gsub("_PRRT", "", .) %>% gsub("_.*_.*", "", .) %>% gsub("^X", "", .)
+diag(hcv_1a.distance) <- NA #Make diagonol (ie. self-comparison) NA to avoid accidentally counting as 0 distances
+hcv_1a.distance <- hcv_1a.distance[rownames(hcv_1a.drop_pairs), colnames(hcv_1a.drop_pairs)] #reorder rows and columns to match hcv_1a.drop_pairs
+identical(rownames(hcv_1a.distance), rownames(hcv_1a.drop_pairs)) &
+identical(colnames(hcv_1a.distance), colnames(hcv_1a.drop_pairs)) #check
+hcv_1a.distance[hcv_1a.drop_pairs == 0] <- NA #drop all comparisons between sequences with little overlap
+hcv_1a.distance[hcv_1a.distance == "NaN"] <- NA #For some reason, TN93 produces NAN values, so make sure these are treated like NA also
+
+sum(duplicated(gsub("_reseq", "", row.names(hcv_1a.distance)))) #How many duplicate ptids are there #3
+
+##4a
+hcv_4a.fasta <- read.FASTA("./inputs/HCV_alignment_V3_4a_V5_88.fasta")
+
+hcv_4a.distance <- dist.dna(hcv_4a.fasta , model = "TN93", as.matrix = TRUE, pairwise.deletion = TRUE)
+rownames(hcv_4a.distance) <- gsub("\\|.*", "", rownames(hcv_4a.distance)) %>%
+  gsub("_PRRT", "", .) %>% gsub("_.*_.*", "", .) %>% gsub("^X", "", .) #fix row and column names
+colnames(hcv_4a.distance) <- gsub("\\|.*", "", colnames(hcv_4a.distance)) %>%
+  gsub("_PRRT", "", .) %>% gsub("_.*_.*", "", .) %>% gsub("^X", "", .)
+diag(hcv_4a.distance) <- NA #Make diagonal (ie. self-comparison) NA to avoid accidentally counting as 0 distances
+hcv_4a.distance <- hcv_4a.distance[rownames(hcv_4a.drop_pairs), colnames(hcv_4a.drop_pairs)] #reorder rows and columns to match hcv_1a.drop_pairs
+identical(rownames(hcv_4a.distance), rownames(hcv_4a.drop_pairs)) &
+identical(colnames(hcv_4a.distance), colnames(hcv_4a.drop_pairs)) #check
+hcv_4a.distance[hcv_4a.drop_pairs == 0] <- NA 
+hcv_4a.distance[hcv_4a.distance == "NaN"] <- NA
+
+sum(duplicated(gsub("_reseq", "", row.names(hcv_4a.distance)))) #How many duplicate ptids are there #2
+
+all_ptids <- gsub("_reseq", "", c(row.names(hcv_1a.distance), row.names(hcv_4a.distance)))
+sum(duplicated(all_ptids)) #How many duplicate ptids are there including between-subtypes (counting the on the _reseq seqs) #7 (2 are duplicated between 1a and 4a)
+all_ptids[(duplicated(all_ptids))] #Which ptids are duplicated? #I verified in the document: reseq_pairs_comparison.xlsx that all of these ptids are truly non-matching duplicates
+
+
+# Tree
+##1a
+hcv_1a.tree <- read.tree("./inputs/HCV_1a.newick")
+hcv1a_ptids <- hcv_1a.tree$tip.label
+hcv1a_ptids.reseqs <- hcv1a_ptids[grepl("_reseq", hcv1a_ptids)] %>% gsub("_reseq", "", .) # note which sequences have the reseq_appendic
+
+##4a
+hcv_4a.tree <- read.tree("./inputs/HCV_4a.newick")
+hcv4a_ptids <- hcv_4a.tree$tip.label
+hcv4a_ptids.reseqs <- hcv4a_ptids[grepl("_reseq", hcv4a_ptids)] %>% gsub("_reseq", "", .) # note which sequences have the reseq_appendix (but store only the ptid)
+
+
+# Subtype data
+hcv_subtypes <- readRDS("./inputs/hcv_135.COMET_subtypes_for_APS_analysis.rds")
+
+```
+
+To do: Use the new tree, not the SHARP only one!
+
+
+## Get edge list for partner-pairs with HCV sequences
+```{r}
+
+# 1a
+
+#pull entries in edge list in the 1a sequence data - note: sequences with the _reseq appendix will not be pulled this way, so we have to add them afterindex_partners_edge.hcv1a <- index_partners_edge %>%
+index_partners_edge.hcv1a <- index_partners_edge %>% 
+  filter(ptid %in% gsub("_reseq", "", hcv1a_ptids) & index_ptid %in% gsub("_reseq", "", hcv1a_ptids)) %>%
+  mutate(hcv_COMET_subtype.F = "1a")
+nrow(index_partners_edge.hcv1a)
+
+#Add rows for each value with a resequenced seqeunce
+index_partners_edge.hcv1a.temp1 <- index_partners_edge.hcv1a %>%
+  filter(ptid %in% hcv1a_ptids.reseqs) %>% mutate(ptid = paste0(ptid, "_reseq"))
+index_partners_edge.hcv1a.temp2 <- index_partners_edge.hcv1a %>%
+  filter(index_ptid %in% hcv1a_ptids.reseqs) %>% mutate(index_ptid = paste0(index_ptid, "_reseq"))
+index_partners_edge.hcv1a <- rbind(index_partners_edge.hcv1a, index_partners_edge.hcv1a.temp1) %>%
+  rbind(index_partners_edge.hcv1a.temp2) %>% #also have to drop any ptids not in the data (for example, ptids that only have a resequenced ptid but not an orignal ptid in the tree)
+  filter(ptid %in% hcv1a_ptids & index_ptid %in% hcv1a_ptids)
+nrow(index_partners_edge.hcv1a )
+all(index_partners_edge.hcv1a$ptid %in% hcv1a_ptids)
+index_partners_edge.hcv1a[, c("ptid", "index_ptid")]
+
+#Check if any sequences ptids are duplicted (ie. have both an original and reseq value)
+unique_hcv1a_included_ptids <- index_partners_edge.hcv1a[,1:2] %>% unlist() %>% unique() 
+unique_hcv1a_included_ptids1 <- grep("_reseq", unique_hcv1a_included_ptids, value = TRUE, invert = TRUE)
+unique_hcv1a_included_ptids2 <- grep("_reseq", unique_hcv1a_included_ptids, value = TRUE) %>%
+  gsub("_reseq", "", .)
+intersect(unique_hcv1a_included_ptids1, unique_hcv1a_included_ptids2) #There are no duplciate ptids
+
+
+
+# 4a
+#pull entries in edge list in the 4a sequence data - note: sequences with the _reseq appendix will not be pulled this way, so we have to add them after
+index_partners_edge.hcv4a <- index_partners_edge %>%
+  filter(ptid %in% gsub("_reseq", "", hcv4a_ptids) & index_ptid %in% gsub("_reseq", "", hcv4a_ptids)) %>%
+  mutate(hcv_COMET_subtype.F = "4a") %>%
+  filter(!(ptid == "391831795112" & index_ptid == "659326742587")) #This pair turned out to have non- or minimally-overlapping sequences, so drop them before getting summary stats
+nrow(index_partners_edge.hcv4a)
+
+#Add rows for each value with a re-sequenced sequence
+index_partners_edge.hcv4a.temp1 <- index_partners_edge.hcv4a %>%
+  filter(ptid %in% hcv4a_ptids.reseqs) %>% mutate(ptid = paste0(ptid, "_reseq"))
+index_partners_edge.hcv4a.temp2 <- index_partners_edge.hcv4a %>%
+  filter(index_ptid %in% hcv4a_ptids.reseqs) %>% mutate(ptid = paste0(index_ptid, "_reseq"))
+#This produced no results, so there are no rows to add to the data. This also mean we don't need to check for duplicate sequences
+
+nrow(index_partners_edge.hcv4a )
+all(index_partners_edge.hcv4a$ptid %in% hcv4a_ptids)
+index_partners_edge.hcv4a[, c("ptid", "index_ptid")]
+
+
+# Visual checks show none of the duplciated seqeuncs were included within 1a and 4a. Were any of the duplicates included between 1a and 4a? No
+intersect(c(gsub("_reseq", "", index_partners_edge.hcv1a$ptid),
+            gsub("_reseq", "", index_partners_edge.hcv1a$index_ptid)),
+           c(gsub("_reseq", "", index_partners_edge.hcv4a$ptid),
+             gsub("_reseq", "", index_partners_edge.hcv4a$index_ptid)))
+
+# Are any of the ptids that ended up having multiple strains in my data:
+multiple_strain_seqs <-  c("279386080150", "419877921130", "513656016013", "524990785957", "578467547560", "602142441409", "834464380645", "875654200652", "893820900169", "983282195148", "279386080150_reseq", "419877921130_reseq", "513656016013_reseq", "524990785957_reseq", "578467547560_reseq", "602142441409_reseq", "834464380645_reseq", "875654200652_reseq", "893820900169_reseq", "983282195148_reseq")
+hcv_ptids <- c(index_partners_edge.hcv1a$ptid, index_partners_edge.hcv1a$index_ptid, index_partners_edge.hcv4a$ptid, index_partners_edge.hcv4a$index_ptid)
+hcv_ptids[hcv_ptids %in% multiple_strain_seqs]
+#419877921130_reseq came from a ptid with multiple strains, but one strain was dropped due to not having an assignable subtype.
+```
+
+
+
+# Cleaning based on "_reseq" seqeunces
+Based on the above analysis, we know that there are 3 duplicate sequences in the 3a alignment and 2 in the 4a alignment and none of these sequences are included in the edge list. Therefore, these sequences only contribute to my analysis by being included in the control group.  
+Given this, and to be able to use existing code without changes, I'm going to 1) drop the "_reseq" version of the duplciate sequences and 2) drop the "_reseq" identifier from the distance matrices and edge list ptids. This will allow me to make direct comparisons between the ptids in the metadata and edge lists.
+
+### Drop duplicate seqs
+```{r}
+## Find seqs to drop
+drop_1a <- row.names(hcv_1a.distance)[duplicated(gsub("_reseq", "", row.names(hcv_1a.distance)))] %>%
+  ifelse(grepl("_reseq$", .), ., paste0(.,"_reseq"))
+
+drop_4a <- row.names(hcv_4a.distance)[duplicated(gsub("_reseq", "", row.names(hcv_4a.distance)))] %>%
+  ifelse(grepl("_reseq$", .), ., paste0(.,"_reseq"))
+
+
+# Drop from distance matrix then drop "_reseq" appendix
+dim(hcv_1a.distance)
+hcv_1a.distance <- hcv_1a.distance[!(rownames(hcv_1a.distance) %in% drop_1a),
+                                     !(colnames(hcv_1a.distance) %in% drop_1a)]
+dim(hcv_1a.distance)
+colnames(hcv_1a.distance) <- gsub("_reseq", "", colnames(hcv_1a.distance))
+rownames(hcv_1a.distance) <- gsub("_reseq", "", rownames(hcv_1a.distance))
+
+
+dim(hcv_4a.distance)
+hcv_4a.distance <- hcv_4a.distance[!(rownames(hcv_4a.distance) %in% drop_4a),
+                                     !(colnames(hcv_4a.distance) %in% drop_4a)]
+dim(hcv_4a.distance)
+colnames(hcv_4a.distance) <- gsub("_reseq", "", colnames(hcv_4a.distance))
+rownames(hcv_4a.distance) <- gsub("_reseq", "", rownames(hcv_4a.distance))
+
+
+## Drop "_reseq appendix from edge_list
+nrow(index_partners_edge.hcv1a)
+index_partners_edge.hcv1a <- index_partners_edge.hcv1a %>% mutate(
+  ptid = gsub("_reseq", "", ptid),
+  index_ptid = gsub("_reseq", "", index_ptid)
+)
+nrow(index_partners_edge.hcv1a)
+#it's not necisary to do this for 4a because there's no "_reseq" sequences
+
+
+# Drop duplictes from ptid lists then drop "_reseq" appendix 
+hcv1a_ptids <- hcv1a_ptids[!(hcv1a_ptids %in% drop_1a)] %>% gsub("_reseq", "", .)
+hcv4a_ptids <- hcv4a_ptids[!(hcv4a_ptids %in% drop_4a)] %>% gsub("_reseq", "", .)
+
+
+```
+
+
+
+
+# Summary stats
+
+
+```{r}
+#Combined 4a and 1a
+index_partners_edge.hcv <- rbind(index_partners_edge.hcv1a, index_partners_edge.hcv4a)
+index_partners_edge.hcv[, 1:6]
+```
+
+
+### Filter metadata
+Only include data from ptids in trees
+```{r}
+# Extract metadata for ptids (also update the ptids in the metadata to include the reseq values (now the reseq samples are treated like different ptids that have the same metadata as the original ptids))
+## 1a
+data.hcv1a <- data.all %>% filter(ptid %in% hcv1a_ptids)
+#CHECK (this should be TRUE)
+nrow(data.hcv1a) == length(hcv1a_ptids)
+
+## 4a
+data.hcv4a <- data.all %>% filter(ptid %in% hcv4a_ptids)
+#CHECK (this should be TRUE)
+nrow(data.hcv4a) == length(hcv4a_ptids)
+
+```
+
+
+
+### Edge list summary stats
+```{r}
+#How many pairs both have HCV sequences?
+index_partners_edge %>%
+  filter(ptid %in% gsub("_reseq", "", c(data.hcv1a$ptid, data.hcv4a$ptid)) &
+           index_ptid %in% gsub("_reseq", "", c(data.hcv4a$ptid, data.hcv1a$ptid))) %>% nrow()
+
+
+#Number of unique participants with a paired partner in hcv data (only same subtype)
+unique_paired_participants.hcv <- unique(c(index_partners_edge.hcv[,"ptid", drop = TRUE], index_partners_edge.hcv[,"index_ptid", drop = TRUE]))
+unique_paired_participants.hcv
+length(unique_paired_participants.hcv)
+
+#pairs with a reverse duplicate (same individuals but index and partner are reversed) in the data
+edge_list_ordered.temp <- index_partners_edge.hcv[, c("ptid", "index_ptid")] %>%
+  apply(1, sort) %>%
+  t()
+inverse_ptid_index_ptid.hcv <- index_partners_edge.hcv[duplicated(edge_list_ordered.temp) | duplicated(edge_list_ordered.temp, fromLast = TRUE), c("ptid", "index_ptid", "pair_HCV_subtype", "hcv_COMET_subtype.F")] #confirm results
+inverse_ptid_index_ptid.hcv 
+```  
+
+There are `r nrow(index_partners_edge.hcv)` index-partner pairs where both individuals have a sequence available (`r length(unique_paired_participants.hcv)` unique individuals represented).  
+This isn't enough to do a complete analysis. Also, the HCV tree is much more differentiated by subtype than for HIV, so any analysis of patristic distances among partner pairs will be dominated by whether or not they share a subtype.  
+Therefore, I will just test the association between partner pairs and subtype for HCV.
+
+
+## Summary stats
+```{r}
+#Participants
+paste("Number of unique participants living with HCV:", sum(data.all$hcvresults_final == "Positive", na.rm = TRUE))
+paste("Number of unique participants with an HCV sequence:", nrow(data.hcv1a) + nrow(data.hcv4a))
+paste("Number of unique participants with a named pair in hcv data:", length(unique_paired_participants.hcv))
+data.all %>%
+  filter(ptid %in% gsub("_reseq", "", unique_paired_participants.hcv)) %>%
+  select(previous_HCV_diagnosis.F) %>% table(. , useNA = "ifany")
+
+# Pairs
+
+paste("Number of total index-partner pairs in total data with sequences:", nrow(index_partners_edge.hcv))
+paste(sum(index_partners_edge.hcv$same_region == "Yes"), "of", nrow(index_partners_edge.hcv), "pairs are from the same region")
+"partner-type in index-partner pairs:"
+paste("Number of pairs with a reverse duplicate (same indivduals but index and pertner are reversed) in the data:", nrow(inverse_ptid_index_ptid.hcv))
+table(index_partners_edge.hcv$region.CN)
+```
+
+Note: all 23 pairs are from the coast, so there is no need to stratify statistics by region  
+TO DO: add hcvstatusconfirmed.index when generating index_partners_edge table above  
+TO DO: verify region was correctly identified. It's suprirsing there's none from Nairobi
+
+### HCV table 1
+```{r}
+table(index_partners_edge.hcv$previous_HCV_diagnosis.F, useNA = "ifany")
+
+table(data.all[data.all$ptid %in% hcv_ptids, "hcv_COMET_subtype.F"]) #all HCV seqs
+table(index_partners_edge.hcv$hcv_COMET_subtype.F) #THS data
+
+table(index_partners_edge.hcv$pair_shareneedles)
+
+table(index_partners_edge.hcv$partner_type, useNA = "ifany")
+index_partners_edge.hcv %>% filter(partner_type == "Both sexual&injecting") %>%
+  select(ptid, index_ptid)
+```
+
+
+
+
+# HCV patristic Distance analysis
+
+## Summarize distances
+```{r}
+# 1a 
+
+# Add distances to edge list
+all_patristic.hcv1a <- get_distance(
+  edge_list = index_partners_edge.hcv1a,
+  dist_matrix = hcv_1a.distance,
+  add_as_column = TRUE)
+all_patristic.hcv1a %>% select(ptid, index_ptid, distance) %>% head(nrow(.))
+
+# Find control group and extract distances
+all.controls.list.hcv1a <- find_control_pairs(
+  edge_list = index_partners_edge.hcv1a,
+  metadata = data.hcv1a, 
+  partner_filter = hcv1a_ptids) #warning about some ptids not present is fine. It's because I provided all the ptids in the tree as the filter (this should also be redundant because I already fitlered the edge list)
+all_patristic.controls.hcv1a <- get_control_dist(
+  edge_list = index_partners_edge.hcv1a,
+  dist_matrix = hcv_1a.distance,
+  partners_list = all.controls.list.hcv1a)
+
+# plot
+pairs_dif_all.plot.hcv <-
+  plot_named_controls_comparison(
+    title = "all partners - HCV 1a",
+    dist = controls_further_than_percent(true_dist =  all_patristic.hcv1a$distance, control_distances = all_patristic.controls.hcv1a),
+    my_ylim = c(0, 15),
+    no_labels = TRUE,
+    NA_ok = TRUE
+  )
+pairs_dif_all.plot.hcv
+
+
+# Develop null distribution
+all.resampled.closer_than_controls.hcv1a  <- replicate(n_resamples, get_resampled_percents(
+  edge_list = index_partners_edge.hcv1a,
+  dist_matrix = hcv_1a.distance,
+  partners_list = all.controls.list.hcv1a,
+  control_distances = all_patristic.controls.hcv1a,
+  print_warning = FALSE))
+mean(all.resampled.closer_than_controls.hcv1a) #check mean - should be ~0.50
+
+
+# Summarize results
+pairs_below_distance_threshold.hcv1a <-
+  summary_by_distance_thresh(
+    control_pairs.dist_list = all_patristic.controls.hcv1a,
+    named_pairs.dist_vec = all_patristic.hcv1a$distance,
+    resampled.closer_than_controls = all.resampled.closer_than_controls.hcv1a,
+    threshold_vec = c(0.005, 0.015, 0.025, 0.045)
+  )
+
+summary.kable.hcv1a <- kable(pairs_below_distance_threshold.hcv1a, "html") %>%
+  kable_styling("striped") %>%
+  add_header_above(c(" ", "all partners" = 2)) %>%
+  scroll_box(width = "1000px") %>%
+  footnote("Rows 1-6 indicate the # (%) of partner pairs with pairwise distances < the threshold
+  *percent of index-control pairs with patristic distance > the named index-partner pair, averaged across all pairs. Percents >50% indicate that indexes are more similar, on average to their named partner than to other individuals from the same region.
+  **Under the resampled distribution, the partner of each index is randomly resampled from the control group. The P-value is the percent of resamplings in which the test statistic (Avg(% controls further than named pairs)) is greater than for the observed data")
+
+summary.kable.hcv1a
+
+save_kable(summary.kable.hcv1a, "./outputs/summary_table_hcv1a.html")
+
+
+
+
+# 4a 
+
+# Add distances to edge list
+all_patristic.hcv4a <- get_distance(
+  edge_list = index_partners_edge.hcv4a,
+  dist_matrix = hcv_4a.distance,
+  add_as_column = TRUE,
+  NA_ok = TRUE)
+all_patristic.hcv4a %>% select(ptid, index_ptid, distance) %>% head(nrow(.))
+
+
+# Find control group and extract distances
+all.controls.list.hcv4a <- find_control_pairs(
+  edge_list = index_partners_edge.hcv4a,
+  metadata = data.hcv4a,
+  partner_filter = hcv4a_ptids)
+all_patristic.controls.hcv4a <- get_control_dist(
+  edge_list = index_partners_edge.hcv4a,
+  dist_matrix = hcv_4a.distance,
+  partners_list = all.controls.list.hcv4a)
+
+# plot
+pairs_dif_all.plot.hcv <-
+  plot_named_controls_comparison(
+    title = "all partners - HCV 4a",
+    dist = controls_further_than_percent(true_dist =  all_patristic.hcv4a$distance, control_distances = all_patristic.controls.hcv4a, NA_ok = TRUE),
+    my_ylim = c(0, 15),
+    no_labels = TRUE,
+    NA_ok = TRUE
+  )
+pairs_dif_all.plot.hcv
+
+
+# Develop null distribution
+set.seed(1)
+all.resampled.closer_than_controls.hcv4a  <- replicate(n_resamples, get_resampled_percents(
+  edge_list = index_partners_edge.hcv4a,
+  dist_matrix = hcv_4a.distance,
+  partners_list = all.controls.list.hcv4a,
+  control_distances = all_patristic.controls.hcv4a,
+  NA_ok = TRUE,
+  print_warning = FALSE))
+mean(all.resampled.closer_than_controls.hcv4a, na.rm = TRUE) #check mean - should be ~0.50
+
+
+# Summarize results
+pairs_below_distance_threshold.hcv4a <-
+  summary_by_distance_thresh(
+    control_pairs.dist_list = all_patristic.controls.hcv4a,
+    named_pairs.dist_vec = all_patristic.hcv4a$distance,
+    resampled.closer_than_controls = all.resampled.closer_than_controls.hcv4a,
+    threshold_vec = c(0.005, 0.015, 0.025, 0.045),
+    NA_ok = TRUE
+  )
+
+summary.kable.hcv4a <- kable(pairs_below_distance_threshold.hcv4a, "html") %>%
+  kable_styling("striped") %>%
+  add_header_above(c(" ", "all partners" = 2)) %>%
+  scroll_box(width = "1000px") %>%
+  footnote("Rows 1-6 indicate the # (%) of partner pairs with pairwise distances < the threshold
+  *percent of index-control pairs with patristic distance > the named index-partner pair, averaged across all pairs. Percents >50% indicate that indexes are more similar, on average to their named partner than to other individuals from the same region.
+  **Under the resampled distribution, the partner of each index is randomly resampled from the control group. The P-value is the percent of resamplings in which the test statistic (Avg(% controls further than named pairs)) is greater than for the observed data")
+
+summary.kable.hcv4a
+
+save_kable(summary.kable.hcv4a, "./outputs/summary_table_hcv4a.html")
+
+
+
+
+
+
+# Combined subtypes
+
+#combine results
+all_patristic.controls.hcv = append(all_patristic.controls.hcv1a, all_patristic.controls.hcv4a)
+all_patristic.hcv = append(all_patristic.hcv1a$distance, all_patristic.hcv4a$distance)
+all.resampled.closer_than_controls.hcv <- rbind(all.resampled.closer_than_controls.hcv1a, all.resampled.closer_than_controls.hcv4a)
+
+# Summarize results
+pairs_below_distance_threshold.hcv <-
+  summary_by_distance_thresh(
+    control_pairs.dist_list = all_patristic.controls.hcv,
+    named_pairs.dist_vec = all_patristic.hcv,
+    resampled.closer_than_controls = all.resampled.closer_than_controls.hcv,
+    threshold_vec = c(0.005, 0.015, 0.025, 0.045, 0.10),
+    NA_ok = TRUE
+  )
+
+summary.kable.hcv.combined <- kable(pairs_below_distance_threshold.hcv, "html") %>%
+  kable_styling("striped") %>%
+  add_header_above(c(" ", "all partners" = 2)) %>%
+  scroll_box(width = "1000px") %>%
+  footnote("Rows 1-6 indicate the # (%) of partner pairs with pairwise distances < the threshold
+  *percent of index-control pairs with patristic distance > the named index-partner pair, averaged across all pairs. Percents >50% indicate that indexes are more similar, on average to their named partner than to other individuals from the same region.
+  **Under the resampled distribution, the partner of each index is randomly resampled from the control group. The P-value is the percent of resamplings in which the test statistic (Avg(% controls further than named pairs)) is greater than for the observed data")
+
+summary.kable.hcv.combined
+
+save_kable(summary.kable.hcv.combined, "./outputs/summary_table_hcv.combined.html")
+
+
+
+```
+
+To do: tripple check that only controls from the same region are included
+
+
+# Look at distribution of needle-sharing by patristic distance
+```{r}
+# Any needle-sharing
+all_patristic.hcv <- rbind(all_patristic.hcv1a, all_patristic.hcv4a)
+all_patristic.hcv %>% select(distance, pair_shareneedles) %>%
+  group_by(pair_shareneedles) %>%
+  summarize(total =n(), mean_dist = mean(distance))
+
+#What's the mean distance for 4a subtype if excluding the sexual and injecting partner pair?
+all_patristic.hcv4a %>%
+  filter(partner_type_comb.F != "Sexual&Injecting") %>% pull(distance) %>% mean()
+
+#look at all distances in order
+all_patristic.hcv  %>% arrange(distance) %>% select(ptid, index_ptid, distance, pair_shareneedles, pair_shareneedles_eachother, shareneedles.F, shareneedles.index, partner_type_comb.F)
+
+# Needle-sharing between the pair
+all_patristic.hcv <- rbind(all_patristic.hcv1a, all_patristic.hcv4a)
+all_patristic.hcv %>% select(distance, pair_shareneedles_eachother) %>%
+  group_by(pair_shareneedles_eachother) %>%
+  summarize(total =n(), mean_dist = mean(distance))
+#There is 1 pair that says they shared needles with each other, but also neither partner says they shared needles in the last month
+```
+
+
+
+## Visualize partner links on HCV tree  
+I'm only doign for 4a tree - snce there's only 4 pairs on the 1a tree
+I think this only works because there's no _reseq sequences in this data - if there were, this might break
+```{r}
+# Filter edge list by partner types
+injecting_partners4a <- as.character(index_partners_edge.hcv4a[index_partners_edge.hcv4a$partner_type == "Injecting", "ptid", drop = TRUE])
+injecting_indexes4a <- as.character(index_partners_edge.hcv4a[index_partners_edge.hcv4a$partner_type == "Injecting", "index_ptid", drop = TRUE])
+sexual_and_injecting_partners4a <- as.character(index_partners_edge.hcv4a[index_partners_edge.hcv4a$partner_type == "Both sexual&injecting", "ptid", drop = TRUE])
+sexual_and_injecting_indexes4a <- as.character(index_partners_edge.hcv4a[index_partners_edge.hcv4a$partner_type == "Both sexual&injecting", "index_ptid", drop = TRUE])
+sexual_partners4a <- as.character(index_partners_edge.hcv4a[index_partners_edge.hcv4a$partner_type == "Sexual", "ptid", drop = TRUE])
+sexual_indexes4a <- as.character(index_partners_edge.hcv4a[index_partners_edge.hcv4a$partner_type == "Sexual", "index_ptid", drop = TRUE])
+
+
+#All participants with HCV sequences and a partner with HCV sequence
+data.hcv4a_with_partner_pairs <- data.hcv4a[data.hcv4a$ptid %in% unique_paired_participants.hcv, ]
+nrow(data.hcv4a_with_partner_pairs)
+
+#Add a variable to data.hcv indicating whether the participant is a partner, an index, or both & whether they are a sexual or injecting partner in THIS analysis
+data.hcv4a_with_partner_pairs <- data.hcv4a_with_partner_pairs %>% mutate(
+  index_or_partner.2.F = case_when(
+    ptid %in% intersect(index_partners_edge.hcv4a[,"index_ptid", drop = TRUE], index_partners_edge.hcv4a[,"ptid", drop = TRUE]) ~ "index_and_partner",
+    ptid %in% index_partners_edge.hcv4a[,"index_ptid", drop = TRUE] ~ "index",
+    ptid %in% index_partners_edge.hcv4a[,"ptid", drop = TRUE] ~ "partner"
+    ), #is the ptid from an index, partner or both in THIS dataset (ie. limited to partner pairs where both individuals have an HIV sequence)
+  partner_type.2.F = case_when(
+     ptid %in% sexual_partners4a ~ "sexual",
+     ptid %in% injecting_partners4a ~ "injecting",
+     ptid %in% sexual_and_injecting_partners4a ~ "sexual_and_injecting",
+     TRUE ~ as.character(NA)
+  )
+)
+
+# CHECK 12
+table(index_or_partner.F = data.hcv4a_with_partner_pairs$index_or_partner.F, index_or_partner.2.F = data.hcv4a_with_partner_pairs$index_or_partner.2.F, useNA = "ifany")
+
+#Add partner-type for THIS analysis to meta tree
+tree.hcv4a.meta <- left_join(as_tibble(hcv_4a.tree), data.hcv4a_with_partner_pairs[,c("ptid", "index_or_partner.2.F", "partner_type.2.F")], by = c("label" = "ptid"))
+#Note: "index_or_partner.2.F" is the same varaible as index_or_partner.F, but is limited to this analyses 
+
+partner_pairsXparter_typeXenrollment_type.SHARP_hcv4a.tree <- ggtree(hcv_4a.tree) %<+% tree.hcv4a.meta +
+  geom_tippoint(aes(shape = index_or_partner.2.F, colour = partner_type.2.F)) + 
+  labs(colour = "partner type", shape = "enrollment") +
+  #add connections between named pairs, colored by type of partner
+  #taxalink: taxa1 = partners, taxa2= indexes - add separate taxa for each partner type
+  geom_taxalink(taxa1 = injecting_partners4a,
+                taxa2 = injecting_indexes4a,
+                alpha = 0.75, colour = "#F8766D",
+                arrow=arrow(length=unit(0.02, "npc"), ends="first"),
+                mapping = aes()) +
+  geom_taxalink(taxa1 = sexual_and_injecting_partners4a,
+                taxa2 = sexual_and_injecting_indexes4a,
+                alpha = 0.75, colour = "#619CFF",
+                arrow=arrow(length=unit(0.02, "npc"), ends="first")) +
+    ggtitle("Indexes vs partner enrollments") +
+  theme(plot.margin = unit(c(14,8,14,8), "mm")) +
+  geom_treescale()
+partner_pairsXparter_typeXenrollment_type.SHARP_hcv4a.tree
+
+ggsave(partner_pairsXparter_typeXenrollment_type.SHARP_hcv4a.tree, file = "./outputs/APS_named_pairs.SHARP_hcv_4a.png", width = 30, height = 10.5, units = "in")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<br><br><br><br><br>
+
+
+
+# Notes:  
+### To do:  
+
+### Questions:  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<br><br><br><br>
+# OTHER
+
+#### This just shows that controls_further_than_percent() works correctly
+```{r, eval = FALSE}
+temp <- c()
+for(i in 1:length(control_pairs.dist_list)){
+  percent <- sum(named_pairs.dist_vec[i] < control_pairs.dist_list[[i]])/length(control_pairs.dist_list[[i]])
+  temp <- append(temp, percent)
+}
+```
+
+
+
+
+
+
+
+
+<br><br><br><br><br><br><br>
+
+
+# BACKUP
+```{r, preset formatting arguments for table1, echo = FALSE, eval = FALSE}
+#render.continuous
+rndr_cts = function(x) {
+    with(stats.default(x),
+         sprintf("%0.1f (%0.1f, %0.1f)", MEDIAN, Q1, Q3))
+}
+
+#render.categorical
+rndr_cat = function(x) {
+    c("", sapply(stats.default(x), function(y) with(y,
+        sprintf("%d (%0.1f%%)", FREQ, PCT))))
+}
+
+table1.hiv <- table1(~ partner_type_comb.F +
+                   hiv_status_final.F +
+                   hcvresults_final +
+                     hivtestbeforepositive +
+                     first_pos_hiv_time_cat +
+                     everinjecteddrugs +
+                     shareneedles + 
+                     shareequipment +
+                     sexpartners3months |
+                     index_or_partner.F,
+         data = data.hiv, 
+         render.continuous = rndr_cts,
+         render.categorical = rndr_cat,
+         render.missing = NULL,
+         overall = "Total")
+
+as.data.frame(table1.hiv)
+```
+
+
+#Check for the number of partner-pairs in the original data
+```{r, eval = FALSE}
+#temp
+partner <- read.csv("./metadata/raw/sharp_partner_master_data.csv")
+index <- read.csv("./metadata/raw/sharp_index_master_data.csv")
+participants_all_enrollments <- rbind.fill(index, partner) 
+
+index_partners_edge.hiv <- participants_all_enrollments %>%
+  filter(ptid %in% data.hiv$ptid & index_ptid %in% data.hiv$ptid) %>%
+  mutate(ptid = as.character(ptid), index_ptid = as.character(index_ptid))
+nrow(index_partners_edge.hiv)
+
+View(index_partners_edge.hiv %>% select(ptid, index_ptid))
+```
+
+
+
+## Functions to manipulate distance matrix
+
+## FUNCTION: clean matrix to only comparisons between individuals from the same region
+```{r, eval = FALSE}
+sparse_matrix <- function(dist_matrix){
+  #exclude duplicates from matrix by setting the upper triangle to NA:
+  dist_matrix[lower.tri(dist_matrix)] <- NA
+  print(paste0("total_unique_pairs: ", sum(!is.na(dist_matrix))))
+  
+  #Add same region variable to hiv metadata
+  #data.hiv <- left_join(data.hiv, participants_all_enrollments[,c("[ptid]")])
+  
+  #limit distance matrix to only comparisons between individuals from the same region (since all named pairs are from the same region, it makes sense to only compare against pairs from the same region)
+  for(ptid1 in rownames(dist_matrix)) {
+    region1 <- data.hiv[data.hiv$ptid == ptid1, "region.CN"]
+    for (ptid2 in colnames(dist_matrix)) {
+      region2 <- data.hiv[data.hiv$ptid == ptid2, "region.CN"]
+      if (region1 != region2) {
+        #if the ptid and index_ptid aren't from the same region
+        dist_matrix[ptid1, ptid2] <- NA #set corresponding value to NA in matrix
+        dist_matrix[ptid2, ptid1] <- NA #duplicate in both directions (that way we don't have to worry about which "triangle" we kept from the matrix - but this should actually already be NA)
+      }
+    }
+  }
+  print(paste0("total_unique_pairs_same_region: ", sum(!is.na(dist_matrix))))
+  return(dist_matrix)
+}
+
+```
+Note: this take sort of a long time to run - can I do with apply? Will that be faster?  
+
+
+## FUNCTION: get vectors of sequence differences between all possible pairs vs named pairs for a subgroup
+```{r, eval = FALSE}
+#Returns a list with 2 elements (named_pairs_dif and all_dif), which are vectors of the pairwise distances between named partner pairs and all possible pairs in the tree (within filter_list, if provided), respectively. Note: the two vectors are not indexed the same.
+
+pairs_dif_calc <- function(edge_list, distance_matrix, compare_column, filter_list = NULL) {
+  #edge_list = a data frame containing "ptid" "index_ptid" (ie. the index who named the person as a partner) and a comparison column, which is named by the compare_column argument. edge_list should be pre-filtered to only rows where both "ptid" and "index_ptid" are in the distance matrix)
+  #distance matrix = a matrix of the distances (ex. % shared based, % different bases, patristic distance) for all possible pairwise comparisons in phylogeny
+  #compare column = the column in edge_list to compare by (a measure of pairwise distance that matches the distance matrix). The compare_column values for the pairs in edge_list should match those cells in the distance matrix
+  #filter_list = (optional) further filter criteria for both the edge_list and distance_matrix provided as a vector of ptid values. This is used, for example, to compare only pairs in which an individual was recruited as a sexual partner
+  
+  #Get the % distance between each identified partner pairs of the partner type of interest
+  filtered_edge_list <- edge_list %>%
+      filter(ptid %in% filter_list)
+
+  print(paste("Total named pairs in phylogeny:", nrow(filtered_edge_list)))
+
+  
+  #extract all percent sequence similarities distances for individuals of this partner type
+  all_diff <-
+    as.vector(distance_matrix[colnames(distance_matrix) %in% filter_list]) %>%
+              #exclude 0 values (these are comparing self-self) - makes no difference?
+              .[.!= 0] %>% .[!is.na(.)]
+  print(paste("Total partner pairs in phylogeny:", length(all_diff)))
+  
+  return(list(named_pairs_dif = filtered_edge_list[ , compare_column], all_dif = all_diff))
+}
+```
+
+
+### % differences analyses
+## Compair sequence distance between named pairs - % similarity from distance matrix 
+#### This is based on the alignment, not the phylogentic tree
+```{r, eval = FALSE}
+# Add percent difference to edge list:
+index_partners_edge.hiv$Percent <- NA
+for(i in 1:nrow(index_partners_edge.hiv)){
+  row <- index_partners_edge.hiv[i,]
+  #Get distance from matrix indexed by ptid ([1]) and index_ptid ([2])
+  index_partners_edge.hiv$Percent[i] <- hiv.Percent[as.character(row[1]), as.character(row[2])]
+  i <- i + 1
+}
+
+#sparsify distance matrix to only include one comparison per pair and only between sequences from the same region
+SHARP_hiv.Percent <- sparse_matrix(SHARP_hiv.Percent)
+
+
+#Run analysis
+#Because the filter list only includes individuals with sequences, the comparison is between named pairs vs. between all possible pairs on the tree containing either the index or partner
+pairs_dif_sexual <- pairs_dif_calc(
+  edge_list = index_partners_edge.hiv,
+  distance_matrix = SHARP_hiv.Percent,
+  compare_column = "Percent",
+  filter_list = sexual)
+pairs_dif_sexual.plot <- plot_pairs_dif(
+  observed_diff = pairs_dif_sexual$named_pairs_dif,
+  all_diff = pairs_dif_sexual$all_dif,
+  title = "Sexual partners",
+  color1 = rgb(0.2, 0.2, 1),
+  xlim = c(0,30))
+
+pairs_dif_injecting <- pairs_dif_calc(
+  edge_list = index_partners_edge.hiv,
+  distance_matrix = SHARP_hiv.Percent,
+  compare_column = "Percent",
+  filter_list = injecting)
+pairs_dif_injecting.plot <- plot_pairs_dif(
+  observed_diff = pairs_dif_injecting$named_pairs_dif,
+  all_diff = pairs_dif_injecting$all_dif,
+  title = "Injecting partners",
+  color1 = rgb(0.6, 0.2, 0.6),
+  xlim = c(0,30))
+
+pairs_dif_all_partners <- pairs_dif_calc(
+  edge_list = index_partners_edge.hiv,
+  distance_matrix = SHARP_hiv.Percent,
+  compare_column = "Percent",
+  filter_list = all_partners)
+pairs_dif_all_partners.plot <- plot_pairs_dif(
+  observed_diff = pairs_dif_all_partners$named_pairs_dif,
+  all_diff = pairs_dif_all_partners$all_dif,
+  title = "All partners",
+  color1 = rgb(0.2, 0.8, 0.8),
+  xlim = c(0,30))
+
+pairs_dif_all <- pairs_dif_calc(
+  edge_list = index_partners_edge.hiv,
+  distance_matrix = SHARP_hiv.Percent,
+  filter_list = all,
+  compare_column = "Percent")
+pairs_dif_all.plot <- plot_pairs_dif(
+  observed_diff = pairs_dif_all$named_pairs_dif,
+  all_diff = pairs_dif_all$all_dif,
+  title = "All",
+  color1 = rgb(0.6, 0.6, 0.2),
+  xlim = c(0,30))
+```
+Note: go back and give sparsified matrix a different name from the original matrix
+
+#### Save plots together
+```{r, eval = FALSE}
+pairs_hist <- ggarrange(
+  pairs_dif_sexual.plot,
+  pairs_dif_injecting.plot,
+  pairs_dif_all_partners.plot,
+  pairs_dif_all.plot,
+  ncol = 2, nrow = 2,
+  common.legend = TRUE, legend = "right"
+)
+
+pairs_hist <- annotate_figure(pairs_hist, top = text_grob("% difference (bases)", color = "red", face = "bold", size = 14))
+pairs_hist
+
+ggsave("./results/APS/partner_percent_distance_hist.png", pairs_hist)
+
+
+#You can't actually see the named pairs plots because their ylim is so much smaller
+#Here are the plots zoomed in on the named pairs histograms:
+#(cord_cartesian works like ylim() but doesn't exclude data that falls outside the axis
+ggarrange(
+  pairs_dif_sexual.plot + coord_cartesian(ylim=c(0, 10)),
+  pairs_dif_injecting.plot + coord_cartesian(ylim=c(0, 10)),
+  pairs_dif_all_partners.plot + coord_cartesian(ylim=c(0, 10)),
+  pairs_dif_all.plot + coord_cartesian(ylim=c(0, 10)),
+  ncol = 2, nrow = 2,
+  common.legend = TRUE, legend = "right"
+)
+```
+
+### APS pairs summary table
+```{r, eval = FALSE}
+pairs_below_distance_threshold.list <- list(
+  summary_by_distance_thresh(all_pairs_vec = pairs_dif_sexual$all_dif,
+                            named_pairs.dist_vec = pairs_dif_sexual$named_pairs_dif,
+                            threshold_vec = c(2.5, 5, 7.5, 10)),
+  summary_by_distance_thresh(all_pairs_vec = pairs_dif_injecting$all_dif,
+                             named_pairs.dist_vec = pairs_dif_injecting$named_pairs_dif,
+                            threshold_vec = c(2.5, 5, 7.5, 10))[,2:3],
+  summary_by_distance_thresh(all_pairs_vec = pairs_dif_all_partners$all_dif,
+                            named_pairs.dist_vec = pairs_dif_all_partners$named_pairs_dif,
+                            threshold_vec = c(2.5, 5, 7.5, 10))[,2:3],
+  summary_by_distance_thresh(all_pairs_vec = pairs_dif_all$all_dif,
+                             named_pairs.dist_vec = pairs_dif_all$named_pairs_dif,
+                            threshold_vec = c(2.5, 5, 7.5, 10))[,3])
+
+pairs_below_distance_threshold.df <- bind_cols(pairs_below_distance_threshold.list)
+
+kable(pairs_below_distance_threshold.df, "html") %>%
+  kable_styling("striped") %>%
+  add_header_above(c(" ", "sexual " = 2, "injecting" = 2, "all partners" = 2, "all" = 1)) %>%
+ scroll_box(width = "1000px") %>%
+  footnote("Rows 1-5 indicate the # (%) of partner pairs with pairwise distances < the threshold
+  P value - t-test = compares the means of the named_pairs distance distribution vs. the all-pairs distance distribution usign a t-test
+  P vlaue - non-parametric = comparison of the mean distance between named pairs to the distribution for the all-pairs (what percent of the all-pairs distances are more extreme than the average named pairs distance)")
+
+#write.table()
+```
+There is a large difference in the percent of named pairs falling below the 5% distance threshold vs. the percent out of all possible pairs; however, we should not make too much of this because of the small sample size for named pairs. I'm also not sure we should present statistics that refer to only 2 pairs of individuals.   
+This is why, despite this large difference, the tests for statistical significance are non-significant.  
+As with discrete trait analysis, I think the non-parametric P-value should actually be multiplied by 2 because it currently has an upper-bound of 0.5  
+
+
+
+
+
+
+## FUNCTION: resample partner pair for each index
+Resampled partners must match the original partner by region, sex, and partner type (ie. a partner that was only enrolled as a sexual partner is only a match for a named partner that was enrolled as a sexual or sexual and injecting partner and visa versa) 
+```{r, eval = FALSE}
+resample_partner <- function(edge_list, metadata, partner_filter = NULL) {
+  if(!is.null(partner_filter)){
+    if(all(partner_filter %in% edge_list$ptid)){
+      edge_list <- edge_list %>% filter(ptid %in% partner_filter)
+    } else if(length(interaction(partner_filter, edge_list$ptid))>0){
+      edge_list <- edge_list %>% filter(ptid %in% partner_filter)
+      warning("Some ptids in filter list not present in edge list")
+    } else if(max(partner_filter) <= nrow(edge_list)){
+      edge_list <- edge_list[partner_filter,]
+      warning("Filter provided as  row numbers. Ensure row numbers correspond to edge list to avoid errors")
+    } else {
+      stop("partners in filter vector not present in data, or unrecognized fromat for filtering. Partner filtering criteria excepts vector of ptids or row numbers")
+    }
+  }
+  
+  resampled_edge_list <- edge_list %>%
+    mutate(ptid = NA, number_resampled_from = NA)
+  
+  for(i in 1:nrow(edge_list)){
+    partner <- edge_list[i, "ptid"]
+    index_of_partner <- as.character(edge_list[i, "index_ptid"])
+    partner_region <- metadata[metadata$ptid == partner, "region"]
+    #partner_times_enrolled <- metadata[metadata$ptid == partner, "times_enrolled"]
+    partner_type <- metadata[metadata$ptid == partner, "partner_type_comb.F"]
+    partner_sex <- metadata[metadata$ptid == partner, "sex"]
+    new_partners <- metadata %>% filter(
+      index_or_partner.F != "index" & #has been named at least once as a partner (ie. not only an index)
+      ptid != index_of_partner & # not the same individual as the index
+      region == partner_region & partner_type_comb.F == partner_type & # same region and partner type as original partner (note: allowing the resampled partner to be the same as the original partner)
+#      & (times_enrolled - 1 <= partner_times_enrolled | times_enrolled + 1 >= 1.25*partner_times_enrolled) & #within 1 enrollment (by number) of the original partner
+        sex == partner_sex) %>%
+      pull(ptid)
+    
+    resampled_edge_list[i, "number_resampled_from"] <- length(new_partners) #save a record of how many partners fit eligibility criteria for re sampling (if this number is too small, this won't be a meaningful test)
+    resampled_edge_list[i, "ptid"] <- sample(new_partners, 1)
+  }
+  
+  return(resampled_edge_list)
+}
+
+#EXAMPLE
+#here's the non-resampled edge list:
+head(index_partners_edge.hiv)
+#And here's the resampled one (notice the indexes stay the same but the partner changes)
+head(resample_partner(edge_list = index_partners_edge.hiv, metadata = data.hiv, partner_filter = NULL))
+```
+
+
+
+
+
+
+
+
+
+## Resampling method
+
+
+
+
+
+#### (NOT USING) FUNCTION: Resample and get dist - combines the 2 functions in order to get distances from multipe resamples
+```{r, echo = FALSE, eval = FALSE}
+dist_from_resample <- function(edge_list, metadata, dist_matrix, partner_filter = NULL){
+    non_named_pairs <- find_control_pairs(edge_list, metadata, partner_filter)
+    resampled_edge_list <- resample_partner(edge_list, non_named_pairs, partner_filter)
+    get_distance(resampled_edge_list, dist_matrix)
+    }
+
+#EXAMPLE
+resample.dist.temp <- dist_from_resample(edge_list = index_partners_edge.hiv, metadata = data.hiv, dist_matrix = hiv.Patristic, partner_filter = NULL)
+head(resample.dist.temp)
+```
+
+## Get distances - for observed and resampled data
+```{r, echo = FALSE, eval = FALSE}
+#sexual
+sexual_patristic <- get_distance(edge_list = index_partners_edge.hiv,
+                                 dist_matrix = hiv.Patristic,
+                                 partner_filter = sexual_only)
+
+sexual_patristic.resampled <- replicate(n_resamples, dist_from_resample(
+  edge_list = index_partners_edge.hiv,
+  metadata = data.hiv,
+  dist_matrix = hiv.Patristic,
+  partner_filter = sexual_only))
+
+#Injecting
+injecting_patristic <- get_distance(edge_list = index_partners_edge.hiv,
+                                 dist_matrix = hiv.Patristic,
+                                 partner_filter = injecting_only)
+
+injecting_patristic.resampled <- replicate(n_resamples, dist_from_resample(
+  edge_list = index_partners_edge.hiv,
+  metadata = data.hiv,
+  dist_matrix = hiv.Patristic,
+  partner_filter = injecting_only))
+
+#All
+all_patristic <- get_distance(edge_list = index_partners_edge.hiv,
+                                 dist_matrix = hiv.Patristic)
+
+all_patristic.resampled <- replicate(n_resamples, dist_from_resample(
+  edge_list = index_partners_edge.hiv,
+  metadata = data.hiv,
+  dist_matrix = hiv.Patristic))
+
+
+#Recency of diagnosis - note: not doing resampling because I'm interested in comparing to other types of pairs, not to the null
+recent_diagnosis_patristic <- get_distance(edge_list = index_partners_edge.hiv,
+                                 dist_matrix = hiv.Patristic,
+                                 partner_filter = recent_diagnoses)
+
+not_recent_diagnosis_patristic <- get_distance(edge_list = index_partners_edge.hiv,
+                                 dist_matrix = hiv.Patristic,
+                                 partner_filter = not_recent_diagnoses)
+
+#similarity of diagnosis time
+similar_diagnosis_patristic <- get_distance(edge_list = index_partners_edge.hiv,
+                                 dist_matrix = hiv.Patristic,
+                                 partner_filter = similar_diagnoses_times)
+
+dissimilar_diagnosis_patristic <- get_distance(edge_list = index_partners_edge.hiv,
+                                 dist_matrix = hiv.Patristic,
+                                 partner_filter = dissimilar_diagnoses_times)
+```
+*Note: I created the warning about "ptids in filter list not present in edge list" but it can be ignored as long as the filter list is not intended to include only those in edge list (I made the filter list just based on the hiv data, so it includes those who don't have sequences)* 
+
+
+
+# Plots
+```{r, echo = FALSE, eval = FALSE}
+# Partner type vs. null
+pairs_dif_sexual.plot <- plot_pairs_dif(
+  observed_diff = sexual_patristic,
+  null_diff = apply(sexual_patristic.resampled, 1, mean),
+  title = "Sexual partners",
+  color1 = rgb(0.2, 0.2, 0.8),
+  legend_name = "patristic distance")
+
+pairs_dif_injecting.plot <- plot_pairs_dif(
+  observed_diff = injecting_patristic,
+  null_diff = apply(injecting_patristic.resampled, 1, mean),
+  title = "injecting partners",
+  color1 = rgb(0.2, 0.8, 0.2),
+  legend_name = "patristic distance")
+
+pairs_dif_all.plot <- plot_pairs_dif(
+  observed_diff = all_patristic,
+  null_diff = apply(all_patristic.resampled, 1, mean),
+  title = "all partners",
+  color1 = rgb(0.4, 0.2, 0.4),
+  legend_name = "patristic distance")
+
+pairs_hist <- ggarrange(
+  pairs_dif_sexual.plot,
+  pairs_dif_injecting.plot,
+  pairs_dif_all.plot,
+  ncol = 3, nrow = 1,
+  common.legend = TRUE, legend = "right"
+)
+pairs_hist <- annotate_figure(pairs_hist, top = text_grob("patristic distance", color = "red", face = "bold", size = 14))
+pairs_hist
+
+ggsave("./results/APS/partner_patristic_dist_hist.png", pairs_hist)
+```
+
+
+## Plot comparisons by partner type and time since diagnosis
+```{r, echo = FALSE, eval = FALSE}
+# Compare partner type
+partner_type.plot <- plot_pairs_dif(
+  #Note: there isn't actually an observed and null here, but that's just what they're called in the function
+  observed_diff = sexual_patristic,
+  null_diff = injecting_patristic,
+  title = "partner type",
+  legend_name = "patristic distance",
+  labels = c("sexual partners", "injecting partners"))
+partner_type.plot 
+
+
+# compare by recency of diagnosis
+pairs_diagnosis_recency.plot <- plot_pairs_dif(
+  observed_diff = recent_diagnosis_patristic,
+  null_diff = not_recent_diagnosis_patristic,
+  title = "time-since-diagnosis",
+  legend_name = "patristic distance",
+  labels = c("avg(time-since-diagnosis) <= 3 years", "avg(time-since-diagnosis) >= 6 years"))
+pairs_diagnosis_recency.plot 
+
+# Compare by similarity of diagnosis time
+pairs_dif_diagnosis_time.plot <- plot_pairs_dif(
+  observed_diff = similar_diagnosis_patristic,
+  null_diff = dissimilar_diagnosis_patristic,
+  title = "diagnosis time difference between partners",
+  legend_name = "patristic distance",
+  labels = c("diagnosed within 1 year of named partner", "diagnosed >= 2 years before or after named partner"))
+pairs_dif_diagnosis_time.plot 
+```
+
+
+## Plot comparisons by partner type and time since diagnosis
+```{r, echo = FALSE, eval = FALSE}
+# Compare partner type
+partner_type.plot <- plot_pairs_dif(
+  #Note: there isn't actually an observed and null here, but that's just what they're called in the function
+  observed_diff = sexual_patristic,
+  null_diff = injecting_patristic,
+  title = "partner type",
+  legend_name = "patristic distance",
+  labels = c("sexual partners", "injecting partners"))
+partner_type.plot 
+
+
+# compare by recency of diagnosis
+pairs_diagnosis_recency.plot <- plot_pairs_dif(
+  observed_diff = recent_diagnosis_patristic,
+  null_diff = not_recent_diagnosis_patristic,
+  title = "time-since-diagnosis",
+  legend_name = "patristic distance",
+  labels = c("avg(time-since-diagnosis) <= 3 years", "avg(time-since-diagnosis) >= 6 years"))
+pairs_diagnosis_recency.plot 
+
+# Compare by similarity of diagnosis time
+pairs_dif_diagnosis_time.plot <- plot_pairs_dif(
+  observed_diff = similar_diagnosis_patristic,
+  null_diff = dissimilar_diagnosis_patristic,
+  title = "diagnosis time difference between partners",
+  legend_name = "patristic distance",
+  labels = c("diagnosed within 1 year of named partner", "diagnosed >= 2 years before or after named partner"))
+pairs_dif_diagnosis_time.plot 
+```
+
+
+
+#### Regression
+```{r, eval = FALSE}
+# Partner type
+partner_type.glm <- glm(partner_type_sexual_or_injecting_only~distance, data = all_patristic.edge_list, family = "binomial")
+exp(coef(partner_type.glm)[2]*0.1)
+partner_type.CI95 <- exp(confint(partner_type.glm)[2,]*0.1)
+
+# Diagnosis recency
+diagnoses_recency.lm <- lm(distance~avg_time_since_diagnosis, data = all_patristic.edge_list)
+coef(diagnoses_recency.lm)[2] #report per-year instead of per-day
+diagnoses_recency.CI95 <- confint(diagnoses_recency.lm)[2,]
+
+#Similar diagnosis times
+diagnosis_similar_times.lm <- lm(distance~years_seperating_HIV_diagnosis, data = all_patristic.edge_list)
+coef(diagnosis_similar_times.lm)[2]
+diagnosis_similar_times.CI95 <- confint(diagnosis_similar_times.lm)[2,]
+```
+
+#### Troubleshooting mismatched edge-list and tree conections
+```{r}
+partners <- as.character(index_partners_edge.hiv[, "ptid", drop = TRUE])
+temp1 <- which(!(partners %in% tree.SHARP_hiv.meta$label))
+indexes <- as.character(index_partners_edge.hiv[, "index_ptid", drop = TRUE])
+temp2 <- which(!(indexes %in% tree.SHARP_hiv.meta$label))
+temp <- union(temp1, temp2)
+partners <- partners[-temp]
+indexes <- indexes[-temp]
+```
+
+
+```{r, eval =FALSE}  
+plot_2_groups <- function(dist1, dist2, title = NULL,
+                           color1 = "aquamarine3", color2 = "cadetblue",
+                           my_xlim = NULL, my_ylim = NULL,
+                           dist1_label = "Controls", dist2_label = "named pairs",
+                           no_labels = FALSE){
+  
+    df1 <- data.frame(dist = dist1, category = "dist1")
+    df2 <- data.frame(dist = dist2, category = "dist2")
+    df <- rbind(df1, df2)
+    df$category <- as.factor(df$category)
+
+    vline1 <- median(dist1)
+    vline2 <- median(dist2)
+    
+    p <-  ggplot(df, aes(x = dist, fill = category)) +
+      ggtitle(title) +
+      theme(legend.title=element_blank()) + 
+      geom_histogram(aes(y = ..count..), bins = 40,
+                    color = "black") +
+      geom_vline(xintercept = vline1, color = color1, size = 0.7) +
+      geom_vline(xintercept = vline2, color = color2, size = 0.7) +
+      scale_fill_manual(values = c(color1, color2),
+                      labels = c(dist1_label, dist2_label)) +
+      labs(x = "pairwise distance") +
+      theme(legend.position="bottom",  legend.direction="vertical")
+
+  
+  if(!is.null(my_xlim)){
+    p <- p + coord_cartesian(xlim = my_xlim)
+  }
+  
+  if(!is.null(my_ylim)){
+    p <- p + coord_cartesian(ylim = my_ylim)
+  }
+  
+  if(no_labels == TRUE){
+    p <- p + labs(x = "", y = "")
+  }
+    
+  return(p)
+}
+
+#EXAMPLE
+plot_2_groups(dist1 = dist.temp$distance, dist2 = unlist(lapply(dist.temp$control_dist, median)))
+```
+*To do: Figure out why there are missing bars*  
+
+
+
+
+## Is being a partner pair associated with sharing an HCV subtype? - not using
+### Develop HCV phylogeny edge list
+```{r, eval = FALSE}
+ #This is similar to the function add_index_data_to_edge_list() but just not adding as many variables and the edge list is all pairwise comparisons in the phylogenetic tree (rather than only named partner pairs)
+SHARP_hcv.Patristic2 <- SHARP_hcv.Patristic
+SHARP_hcv.Patristic2[upper.tri(SHARP_hcv.Patristic2)] <- NA
+all_hcv_pairs.edge <- reshape2::melt(SHARP_hcv.Patristic2) %>%
+  filter(Var1 != Var2 & !is.na(value)) %>%
+  transmute(S1 = as.character(Var1), S2 = as.character(Var2))
+
+for (i in 1:nrow(all_hcv_pairs.edge)){
+  S1 <- all_hcv_pairs.edge$S1[i]
+  S2 <- all_hcv_pairs.edge$S2[i]
+  all_hcv_pairs.edge$hcv_subtypes.S1[i] <- as.character(data.all[data.all$ptid == S1, "hcv_COMET_subtype.F"][1, , drop = TRUE]) #[1,] because just using 1st enrollment, this retains the original levels)
+  all_hcv_pairs.edge$hcv_subtypes.S2[i] <- as.character(data.all[data.all$ptid == S2, "hcv_COMET_subtype.F"][1, , drop = TRUE])
+  all_hcv_pairs.edge$region.S1[i] <- as.character(data.all[data.all$ptid == S1, "region.CN"][1, , drop = TRUE])
+  all_hcv_pairs.edge$region.S2[i] <- as.character(data.all[data.all$ptid == S2, "region.CN"][1, , drop = TRUE])
+  indexes1 <- data.all[data.all$ptid == S1, "index_ptids.F"]
+  indexes2 <- data.all[data.all$ptid == S2, "index_ptids.F"]
+  all_hcv_pairs.edge$hcv_partner_pair[i] <- ifelse(grepl(S2, indexes1) | grepl(S1, indexes2), "Yes", "No")
+}
+
+all_hcv_pairs.edge <- all_hcv_pairs.edge %>%
+  mutate(
+    pair_HCV_subtype = case_when(
+      is.na(hcv_subtypes.S1) | is.na(hcv_subtypes.S2) |
+      hcv_subtypes.S1 == "recombinant" | hcv_subtypes.S2 == "recombinant" |
+      hcv_subtypes.S1 == "unassigned" | hcv_subtypes.S2 == "unassigned"~ as.character(NA),
+        hcv_subtypes.S1 != hcv_subtypes.S2 ~ "different HCV subtypes",
+        hcv_subtypes.S1 == hcv_subtypes.S2 ~ "same HCV subtype",
+        TRUE ~ as.character(NA)) %>%
+      factor(levels = c("different HCV subtypes", "same HCV subtype")),
+    hcv_partner_pair = factor(hcv_partner_pair, levels = c("No", "Yes"))
+  ) %>%
+  filter(region.S1 == region.S2 & region.S1 == "Coast") #Since all index-partner pairs with HCV seqs are from the coast, also limit control groups to the coast. since region may be correlated with subtype, pairs from different regions will probably tend to have more different subtypes. Alternatively, use filter(region.S1 == region.S2) to only include pairwise comparisons from the same region (but this would include pairs both from Nairobi in the control set). 
+
+
+## Develop an edge list limited to those sharing an HCV subtype
+all_hcv_pairs.edge.same_sub <- all_hcv_pairs.edge %>%
+  filter(pair_HCV_subtype == "same HCV subtype")
+```
+
+### Test for association between partner pairs and HCV subtype
+```{r, eval = FALSE}
+table(partners = all_hcv_pairs.edge$hcv_partner_pair, subtype = all_hcv_pairs.edge$pair_HCV_subtype)
+
+hcv_subtypeXpartner_pair <- glm(hcv_partner_pair ~ pair_HCV_subtype, data = all_hcv_pairs.edge, family = "binomial")
+summary3 <- exp(coef(summary(hcv_subtypeXpartner_pair)))
+confint3 <- exp(confint(hcv_subtypeXpartner_pair))
+
+effect_HCVsubtypexpartners <- paste0(round(100*summary3[2,1], 1), "% (", round(100*confint3[2,1], 1), "-", round(100*confint3[2,2], 1), ")")
+## Results
+#Partner pairs are `r effect_HCVsubtypexpartners` as likely to share HCV subtypes compared to non-named partners, after controlling for region.  
+```
+
+
+TO DO: One HCV partner pair is missing from the table. Figure out why this is 
+
+
+
+## Summarize patristic distances - controling for subtype
+NOT USING becaues I decided to make subtype-specific trees instead
+```{r, eval = FALSE}
+# Add distances to edge list
+all_patristic.edge_list.hcv.same_sub <- get_distance(
+  edge_list = index_partners_edge.hcv.same_sub,
+  dist_matrix = SHARP_hcv.Patristic, add_as_column = TRUE)
+all_patristic.hcv.same_sub <- all_patristic.edge_list.hcv.same_sub$distance
+
+# Find control group and extract distances
+all.controls.list.hcv.same_sub <- find_control_pairs(edge_list = index_partners_edge.hcv.same_sub, metadata = data.hcv, match_hcv_sub = TRUE)
+all_patristic.controls.hcv.same_sub <- get_control_dist(
+  edge_list = index_partners_edge.hcv.same_sub,
+  dist_matrix = SHARP_hcv.Patristic,
+  partners_list = all.controls.list.hcv.same_sub)
+
+# plot
+pairs_dif_all.plot.hcv.same_sub <- plot_named_controls_comparison(title = "all partners",
+                                                         dist = controls_further_than_percent(true_dist =  all_patristic.hcv.same_sub, control_distances = all_patristic.controls.hcv.same_sub), 
+                                                     my_ylim = c(0,15), no_labels = TRUE)
+pairs_dif_all.plot.hcv.same_sub
+
+
+# Develop null distribution
+all.resampled.closer_than_controls.hcv.same_sub  <- replicate(n_resamples, get_resampled_percents(
+  edge_list = index_partners_edge.hcv.same_sub,
+  dist_matrix = SHARP_hcv.Patristic,
+  partners_list = all.controls.list.hcv.same_sub,
+  control_distances = all_patristic.controls.hcv.same_sub,
+  print_warning = FALSE))
+mean(all.resampled.closer_than_controls.hcv.same_sub) #check mean -should be ~50%
+
+
+# Summarize results
+pairs_below_distance_threshold.hcv.same_sub <- summary_by_distance_thresh(
+  control_pairs.dist_list = all_patristic.controls.hcv.same_sub,
+  named_pairs.dist_vec = all_patristic.hcv.same_sub,
+  resampled.closer_than_controls = all.resampled.closer_than_controls.hcv.same_sub,
+  threshold_vec = c(0.005, 0.025, 0.05, 0.10, 0.15, 0.20))
+
+summary.kable.hcv.same_sub <- kable(pairs_below_distance_threshold.hcv.same_sub, "html") %>%
+  kable_styling("striped") %>%
+  add_header_above(c(" ", "all partners" = 2)) %>%
+  scroll_box(width = "1000px") %>%
+  footnote("Rows 1-6 indicate the # (%) of partner pairs with pairwise distances < the threshold
+  *percent of index-control pairs with patristic distance > the named index-partner pair, averaged across all pairs. Percents >50% indicate that indexes are more similar, on average to their named partner than to other individuals from the same region.
+  **Under the resampled distribution, the partner of each index is randomly resampled from the control group. The P-value is the percent of resamplings in which the test statistic (Avg(% controls further than named pairs)) is greater than for the observed data")
+
+summary.kable.hcv.same_sub
+
+save_kable(summary.kable.hcv.same_sub, "../results/APS/summary_table_same_sub_hcv.html")
+```
+
+To Do: Show control are matched by subtype and region  
+
+
+## Regression on patristic distance - NOT USING
+This code is broken due to changes above. As this table didn't make it into paper anyway, I won't bother fixing here  
+Dure to small sample size, it make sense jsut to report the counts, rather than to analyze a statistical measure; however, I'm using my esiting regression function, which prints out ORs, although they are of little utility here
+```{r, eval = FALSE}
+
+all_patristic.hcv$dist.binary <- ifelse(all_patristic.hcv$distance <0.05, "PD_less0.05", "PD_over0.05")
+
+partner_pair_characteristics.hcv <- tableby(dist.binary ~
+    partner_type_sexual_or_injecting_only +
+    avg_time_since_diagnosis +
+    pair_shareneedles +
+    years_seperating_HIV_diagnosis +
+    pair_prior_pos.cat +
+    pair_arv.cat + pair_hiv_vl.cat,
+  data = all_patristic.hcv,
+  control = tableby_controls
+)
+
+summary(partner_pair_characteristics.hcv)
+
+setwd("../results/APS/") #This only changes the working directory within the chunk
+write2word(partner_pair_characteristics.hcv, "APS_partner_pair_characteristics.hcv.doc")
+setwd("../../scripts/") #reset working directory just in case
+
+```
+
