@@ -22,8 +22,8 @@ filtered vector of sequence names to be used in analysis
 filtered metadata file of previously published sequences  
 ### 3. parse_hiv_fasta_and_genotpye_file.Rmd  
 recategorizes REGA and COMET sequence subtype data in 2 ways:  
-* simplifies to A1, C, D, or recombinant
-* simplifies to...
+* strict: A1, C, D, or recombinant
+* detailed: [add this]
 **Inputs**  
 tsv files for REGA and COMET subtype estimates (note: should make 2 separate scripts for REGA and COMET)  
 **Outputs**   
@@ -36,7 +36,21 @@ previously published sequence metadata (note: metadata limited to subtype year, 
 REGA and COMET subtype estimates (note: REGA subtypes were used in transmission trends analysis and COMET subtypes were used in APS analysis - see below)  
 **Outputs**  
 Single metadata file containing SHARP and previously published sequences, with subtype information (hereafter called "combined_metadata")    
-### 5. Clean seqs and perform alignments using Geneious Prime  
+### 5. reformatting_and_BEAST_inputs.Rmd (steps 3.1 through 4.3)  
+renames previously published sequences  
+filters fasta files for each subtype  
+(Note: this script actually contains steps to be run at different time-point and needs to be separated into multiple scripts)  
+**Inputs**  
+combined metadata    
+sequence fasta files:  
+* SHARP seqeunces  
+* previously published sequences  
+**Outputs**  
+subtype-specific fasta files  
+
+
+## CLEAN SEQUENCES  
+### 6. Clean seqs and perform alignments using Geneious Prime  
 workflow: "onedrive/SHARP_Study/Phylogenetics/Generalized workflow/HIV_analysis_steps"  
 **Inputs**  
 fasta files of SHARP HIV sequences for subtypes A1, C, and D  
@@ -46,8 +60,8 @@ filtered and trimmed fasta file combining SHARP and previously published sequenc
 record of dropped seqs and trimmed regions here: "onedrive/SHARP_Study/Phylogenetics/Generalized workflow/HIV_analysis_steps"  
   
 
-## PREPPING FILES FOR BEAST AND ML ASR  
-### 6. dicrete_trait_analysis_get_subsample.R  
+## PREPPING FILES FOR BEAST  
+### 7. dicrete_trait_analysis_get_subsample.R  
 Extracts lists of sequences for each ASR analysis based on the desired subsampling scheme:
 * uniform subsampling: equal counts of seqs by region and key population group  
 * Proportionate subsampling: subsample size based on estimated population size (ended up only using for region)  
@@ -57,14 +71,6 @@ combined_metadata
 **Outputs**  
 log file of trait counts in each subsampled set  
 subtype-specific lists of sequences to include in each subsampled set (hereafter called "subsampled_sequence_lists")  
-### 7. reformatting_and_BEAST_inputs.Rmd (steps 3.1 through 4.3)  
-renames previously published sequences  
-filters fasta files for each subtype  
-(Note: this script actually contains steps to be run at different time-point and needs to be separated into multiple scripts)  
-**Inputs**  
-combined metadata    
-**Outputs**  
-subtype-specific fasta files  
 ### 8. reformatting_and_BEAST_inputs.Rmd (step 9)  
 Extracts subsampled fasta files and metadata formatted for BEAST. Unlike for ML ASR, where a single tree is built and then subsampled, ASR in BEAST is conducted concurrent to tree-building. Therefore, all data must be pre-subsampled.    
 (Note: this script actually contains steps to be run at different time-point and needs to be separated into multiple scripts)  
