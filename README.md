@@ -59,7 +59,7 @@ log file of trait counts in each subsampled set
 subtype-specific lists of sequences to include in each subsampled set (hereafter called "subsampled_sequence_lists")  
 ### 7. reformatting_and_BEAST_inputs.Rmd (steps 3.1 through 4.3)  
 renames previously published sequences  
-creates fasta files for each subtype  
+filters fasta files for each subtype  
 (Note: this script actually contains steps to be run at different time-point and needs to be separated into multiple scripts)  
 **Inputs**  
 combined metadata    
