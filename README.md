@@ -102,7 +102,7 @@ Using all sequences (note: for ASR, we used pre-sub setted fasta files), generat
 Note: ASR analyses use a strict clock to improve computational speed, but here I use a relaxed clock.   
 **Inputs**  
 fasta files for each subtype  
-Input parameters are here: [add after cleaning]  
+Input parameters are here: [add after edits]  
 **Outputs**  
 phylogeny with year-of-origin estimates for each branch (hereafter called MRCA_tree)  
 estimated year of most recent common ancestor for the whole tree  
