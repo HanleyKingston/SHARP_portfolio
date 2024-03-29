@@ -100,7 +100,7 @@ Input parameters are here: [add after cleaning]
 **Outputs**  
 phylogeny with year-of-origin estimates for each branch (hereafter called MRCA_tree)  
 estimated year of most recent common ancestor for the whole tree  
-## 12. Identify clusters on MRCA tree
+### 12. Identify clusters on MRCA tree
 Use ClusterPicker to identify clusters on the MRCA tree using maximum distance threshold of 0.045  
 **Inputs**  
 MRCA_tree 
@@ -108,15 +108,15 @@ MRCA_tree
 Data frames of cluster assignments:  
 * by-sequence: 1 sequence per row  
 * by-cluster: 1 cluster per row  
-## 12. reformatting_and_BEAST_inputs.Rmd (step 8)  
+### 13. reformatting_and_BEAST_inputs.Rmd (step 8)  
 Develop metadata file for FigTree visualization  
 (Note: this needs to be made into a separate script)  
-**Input**  
+**Inputs**  
 combined_metadata  
 per-sequence cluster assignments data frame  
 **Outputs**  
 metadata formatted for figtree with sequence cluster assignment and sequence source (SHARP study vs previously published) (hereafter called FigTree_metadata)  
-## 13. View year of origin estimates AND estimate avg. year of origin for clusters containing PWID sequences and PWID-exclusive clusters
+### 14. View year of origin estimates AND estimate avg. year of origin for clusters containing PWID sequences and PWID-exclusive clusters
 Use FigTree V1.1.4 to visualize metadata on tree and find the estimated year of origin.  
 Color clusters by estimated year of origin (be sure to use random colors and not a gradient for easy differentiation) and use shape to indicate PWID seqs.  
 For each cluster, note the year of origin and document in an excel sheet. From this, mean dates and confidences can be calculated.  
@@ -128,7 +128,7 @@ excel file (generated manually) of each date for:
 * clusters containing a PWID seq  
 * clusters exclusive to PWID   
 
-### 11. Develop BEAST input files using beauti v1.10.4  
+### 15. Develop BEAST input files using beauti v1.10.4  
 Develop Bayesian trees while concurrently estimating ancestor states for the traits of interest (region and key population group).  
 **Inputs**  
 subtype-specific subsampled fasta files (for BEAST input)  
@@ -136,14 +136,14 @@ subtype-specific subsampled metadata (for BEAST input)
 Input parameters are here: [will add after edits]  
 **Outputs**  
 XML file to read into BEAST  
-### 11. Develop trees and perform ASR concurrently in BEAST  
+### 16. Develop trees and perform ASR concurrently in BEAST  
 **Inputs**  
 XML file generated in beauti  
 **Outputs**  
 log file  
 tree file  
 summary file  
-### 12. Summarize Markov jumps from BEAST outputs  
+### 17. Summarize Markov jumps from BEAST outputs  
 Steps are here: [will add after edits]. In short:  
 * check for convergence in Tracer  
 * extract the 1000 last trees  
@@ -155,24 +155,30 @@ XML file generated in beauti
 tree output file from BEAST  
 **Outputs**  
 Excel file of Markov jump counts  
-### 13. Estimate Bayes Factor for Markov jump counts for each BEAST tree  
+### 18. Estimate Bayes Factor for Markov jump counts for each BEAST tree  
 Use spreaD3_v0.9.6. to estimate Baye's factor for each transition rate (between traits of interest).  
 Note: must have checked "infer social network with BSSVS" in BEAST input files for this to work  
 **Inputs**  
 log files from Beast runs  
-### 14. combine_spreaD3_BFs.R:  
-Calculates the median BF estimate for each pair of traits across each subsampled tree. Run via command line. Only argument is input path where separate BF file estimates are stored.    
+**Outputs**  
+Text files of BF estimates for each pair of traits & for each subsampled tree (X3 subtypes)    
+### 19. combine_spreaD3_BFs.R:  
+Calculates the median BF estimate for each pair of traits across the subsampled trees. Run via command line. Only argument is input path where separate BF file estimates are stored.    
+**Inputs**  
+Text files of BF estimates  
+**Outputs**  
+Text files of BF estimates combining each subsampled tree   
 
 
 ## CLUSTER ANALYSIS  
 Evaluate clustering trends for HIV sequences from PWID. Unlike with the MRCA_tree cluster analysis (focused on estimating time of origin for clusters), we will define clusters using a ML tree.    
-## 15. Identify clusters
+### 20. Identify clusters
 Use ClusterPicker to identify clusters on the subtype-specific ML trees using maximum distance thresholds of 0.015 and 0.045. Do not use a confidence threshold.  
 **Inputs**  
 ML trees for each subtype  
 **Outputs**  
 data frames of cluster assignments (one data frame is 1 sequence per row and 1 data frame is 1 cluster per row) X2 (for each distance)  
-### 13. Analyze_clusters.Rmd  
+### 21. Analyze_clusters.Rmd  
 **Inputs** 
 combined_metadata  
 data frames of cluster assignments:  
@@ -186,7 +192,7 @@ Figures:
 
 
 ## SUMMARY STATS  
-### 7. visualize_metadata_on_tree.Rmd  
+### 22. visualize_metadata_on_tree.Rmd  
 Plots phylogenies with visualization of sequence or individual-level metadata  
 **Inputs**   
 combined_metadata  
@@ -200,7 +206,7 @@ phylogeny plots by (for SHARP seqs only and all seqs) and for each subtype (A1, 
 * source (SHARP vs previously published)  
 * key population group  
 * risk factors (SHARP only)  
-### 12. discrete_trait_analysis_summaries   
+### 23. discrete_trait_analysis_summaries   
 Generate summary statistics from metadata.  
 **Inputs**  
 combined_metadata  
